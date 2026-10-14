@@ -62,20 +62,20 @@ fn responsive_frames_take_the_devices_screen_live() {
 }
 
 #[test]
-fn without_a_device_a_responsive_frame_fills_the_window_at_100_percent() {
+fn without_a_device_a_responsive_frame_takes_the_windows_width_at_100_percent() {
     let mut s = Session::new();
     let (w, ..) = wide(&mut s);
     s.execute("proto.settings", &json!({"responsive": true})).unwrap();
     let mut u = Ui::new(s);
     u.run("proto.present", json!({"start": w}));
     let p = presenter(&u);
-    // The window is 1440×900; the bar takes 40.
-    assert_eq!(size(&p["frameSize"]), (1440.0, 860.0), "{p}");
+    // The window is 1440 wide; the frame keeps its designed height (a taller one scrolls).
+    assert_eq!(size(&p["frameSize"]), (1440.0, 400.0), "{p}");
     assert_eq!(p["zoom"], json!(1.0));
     assert_eq!(size(&p["panRange"]), (0.0, 0.0));
     // Z has nothing to cycle: the size options don't apply.
     u.key(pos2(720.0, 470.0), Key::Z);
-    assert_eq!(presenter(&u)["scale"], "fit");
+    assert_eq!(presenter(&u)["scale"], "actual");
     // The preview pane (after the presenter closes): the frame takes the pane's area.
     u.key(pos2(720.0, 470.0), Key::Escape);
     u.run("proto.preview", json!({"start": w}));

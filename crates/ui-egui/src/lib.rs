@@ -704,11 +704,19 @@ impl FigApp {
                     if let Some(i) = r.data.get("inspect").and_then(|i| i.as_bool()) {
                         v.inspect = i;
                     }
+                    // Responsive applies to the presentation playing (each starts from the file's setting).
+                    let responsive = r.data.get("responsive").and_then(|i| i.as_bool());
+                    if let Some(on) = responsive {
+                        v.responsive = on;
+                    }
                     if let Some(p) = self.ui.present.as_mut() {
                         p.view.device_frame = v.device_frame;
                         p.view.hotspot_hints = v.hotspot_hints;
                         p.view.inspect = v.inspect;
                         p.set_scale(v.scale);
+                        if let Some(on) = responsive {
+                            p.set_responsive(on);
+                        }
                     }
                 }
                 "preview" => {
@@ -1147,7 +1155,7 @@ impl FigApp {
             "reduceMotion": self.reduce_motion(),
             "presenting": self.ui.present.is_some(),
             "presenter": self.ui.present.as_ref().map(present::Presenter::inspect),
-            "presentOptions": {"scale": self.ui.present_view.scale.id(), "deviceFrame": self.ui.present_view.device_frame, "comments": self.ui.present_view.comments, "hotspotHints": self.ui.present_view.hotspot_hints, "inspect": self.ui.present_view.inspect},
+            "presentOptions": {"scale": self.ui.present_view.scale.id(), "deviceFrame": self.ui.present_view.device_frame, "comments": self.ui.present_view.comments, "hotspotHints": self.ui.present_view.hotspot_hints, "inspect": self.ui.present_view.inspect, "responsive": self.ui.present_view.responsive},
             "preview": self.ui.preview.as_ref().map(|p| p.player.inspect()),
             "mainMenu": self.ui.main_menu,
             "palette": self.ui.palette.is_some(),

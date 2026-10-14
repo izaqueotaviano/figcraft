@@ -4,18 +4,24 @@
 //! The player works on its own copy of the document (interactive components, variables and scroll
 //! offsets change it without touching the user's file) and copies the editor's document again
 //! whenever it changes, so the preview pane follows edits live. On a device, the presented frame
-//! is sized to the device's screen ([`fit_viewport`]): what doesn't fit is clipped, or scrolls when
-//! the frame's overflow allows it. A responsive prototype's frame is instead resized to the screen
-//! (the device's, else the player's whole area) and laid out again, its constraints and auto layout
-//! responding (`figcraft_engine::cmd::proto::respond`, on the player's copy, from the design each
-//! time). Device bodies are drawn in code in the device's colour. Every frame is rendered through
+//! is sized to the device's screen ([`fit_viewport`]): what doesn't fit scrolls down (the
+//! presented frame always scrolls vertically on a screen, [`scroll_range_in`]) and sideways when
+//! its overflow allows it. A responsive prototype's frame is instead resized to the screen (the
+//! device's, else the player's width, keeping its height) and laid out again, its constraints and
+//! auto layout responding (`figcraft_engine::cmd::proto::respond`, on the player's copy, from the
+//! design each time); responsive is the viewer's choice, starting from the file's setting. Device
+//! bodies are drawn in code in the device's colour. Every frame is rendered through
 //! `figcraft_render::render_node`
 //! into a texture. Smart animate interpolates a temporary document between the outgoing and
 //! incoming states ([`smart_interpolate`]) and renders it each animation frame; the other
-//! transitions move or fade the two cached textures ([`transition_frames`]).
+//! transitions move or fade the two cached textures ([`transition_frames`]), the outgoing one where
+//! it was shown.
 //!
-//! The full-window presenter sizes the prototype by its [`PresentView`] (fit, fit width, fill or
-//! actual size; Z cycles them); a prototype bigger than the window pans. Scrolling keeps its
+//! The full-window presenter sizes the prototype by its [`PresentView`] (actual size by default,
+//! fit, fit width or fill; Z cycles them). A prototype bigger than the window pans, centred across
+//! and from its top: without a device a page taller than the window scrolls through it like a web
+//! page by panning its texture (its fixed and sticky layers drawn apart where they stay put,
+//! [`page_pins`]). The wheel scrolls each axis with what can move that way; scrolling keeps its
 //! momentum after a drag or the wheel lets go ([`fling_axis`]), and a drag past the end of a
 //! scroll range stretches ([`rubber_band`]) and springs back on release.
 
@@ -77,8 +83,9 @@ pub struct OverlayState {
 
 #[derive(Clone)]
 struct FrameTex {
-    /// The player's revision, the pixel scale and the frames its animated GIFs show.
-    key: (u64, u64, u64),
+    /// The player's revision, the pixel scale, the frames its animated GIFs show and whether the
+    /// page's pinned layers were left out (they draw from textures of their own, [`page_pins`]).
+    key: (u64, u64, u64, bool),
     tex: egui::TextureHandle,
     /// Page-space rect the texture covers.
     bounds: figcraft_geom::Rect,
@@ -89,6 +96,10 @@ struct Anim {
     from_doc: Document,
     from_frame: NodeId,
     from_tex: Option<FrameTex>,
+    /// Where the outgoing frame was on screen (scrolled or panned as it was), and its pinned
+    /// layers with how far down they were drawn (page units).
+    from_place: Option<Place>,
+    from_pins: Vec<(FrameTex, f64)>,
     transition: Transition,
     start: f64,
     dur: f64,
@@ -128,22 +139,56 @@ const DECAY_WHEEL: f64 = 8.0;
 const SPRING: f64 = 16.0;
 /// A fling inside its range stops below this speed (units/s).
 const FLING_STOP: f64 = 6.0;
-/// The wheel coasts on when it was faster than this as it stopped (screen points/s).
+/// The wheel coasts on when it was faster than this as it stopped (screen points/s, each axis).
 const COAST_MIN: f64 = 40.0;
+/// How long a trackpad must have been still before the wheel's coast starts (seconds): its
+/// system's momentum arrives as more wheel input, which carries the scroll on instead (and
+/// arrives at most ~70 ms apart).
+const WHEEL_GRACE: f64 = 0.06;
+/// The wheel's speed is too old to coast on after this long without input (seconds): frames
+/// didn't come (the window was busy or hidden).
+const WHEEL_STALE: f64 = 0.1;
 /// How far a drag past the end can stretch the content at most (screen points).
 const RUBBER_PTS: f64 = 240.0;
+
+/// The wheel while it turns: per axis, what it last moved that way and how fast (units/s,
+/// smoothed), and when it last moved something.
+#[derive(Clone, Copy, Debug)]
+struct Wheel {
+    x: Option<(Scroller, f64)>,
+    y: Option<(Scroller, f64)>,
+    at: f64,
+    /// It comes from a trackpad (touch phases, or the small steps of smooth scrolling).
+    touchpad: bool,
+}
+
+/// Where the view is panned when the prototype is bigger than the window: across as a fraction
+/// of how far it pans (0.5: centred, so a view that was centred stays centred however the window
+/// changes), down in page units from the top (kept as the window changes, like a web page).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewPos {
+    across: f64,
+    down: f64,
+}
+
+impl Default for ViewPos {
+    fn default() -> Self {
+        Self { across: 0.5, down: 0.0 }
+    }
+}
 
 /// How the full-window presenter sizes the prototype.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PresentScale {
     /// Scaled down to fit the window (never above 100%).
-    #[default]
     Fit,
     /// Scaled to the window's width; what's taller pans.
     FitWidth,
     /// Scaled to cover the whole window; what overflows pans.
     Fill,
-    /// At 100%.
+    /// At 100% (the default, as Figma recommends: a page taller than the window scrolls through it
+    /// like a web page, centred across and from its top).
+    #[default]
     Actual,
 }
 
@@ -203,11 +248,16 @@ pub struct PresentView {
     pub hotspot_hints: bool,
     /// A panel beside the prototype shows the Inspect properties of the layer under the pointer.
     pub inspect: bool,
+    /// The presented frame is responsive: it takes the window's width (keeping its height and
+    /// scrolling), or a device's screen, and lays out again. A viewing option: a presentation
+    /// starts from the file's setting (`proto.settings {responsive}`) and follows it when it
+    /// changes, and turning it on or off in the player doesn't change the file.
+    pub responsive: bool,
 }
 
 impl Default for PresentView {
     fn default() -> Self {
-        Self { scale: PresentScale::Fit, device_frame: true, comments: false, hotspot_hints: true, inspect: false }
+        Self { scale: PresentScale::Actual, device_frame: true, comments: false, hotspot_hints: true, inspect: false, responsive: false }
     }
 }
 
@@ -217,9 +267,11 @@ const FLASH_SECS: f64 = 0.5;
 /// A frame scrolling from one offset to another.
 type ScrollMove = (NodeId, (f64, f64), (f64, f64));
 
-/// "Scroll to" in progress: each moving frame with its offsets from and to.
+/// "Scroll to" in progress: each moving frame with its offsets from and to, and the view of a
+/// page scrolling through the window from and to how far down it is panned (page units).
 struct ScrollAnim {
     frames: Vec<ScrollMove>,
+    view: Option<(f64, f64)>,
     start: f64,
     dur: f64,
     easing: Easing,
@@ -232,6 +284,7 @@ struct Snapshot {
     overlays: Vec<OverlayState>,
     history: Vec<Visit>,
     scroll: HashMap<NodeId, (f64, f64)>,
+    pan: ViewPos,
 }
 
 /// A "while hovering / while pressing" state that reverts when the pointer leaves / lifts.
@@ -291,20 +344,26 @@ pub struct Presenter {
     drag_scroll: Option<(Scroller, (f64, f64))>,
     /// How the full-window presenter sizes the prototype.
     pub view: PresentView,
-    /// How far the view is panned when the prototype is bigger than the window (points; None:
-    /// centred across, at the top).
-    pan: Option<(f64, f64)>,
-    /// How far the view can pan, and the zoom it shows at (from the last layout).
+    /// The file's Responsive setting as last seen (`view.responsive` takes it when it changes).
+    file_responsive: Option<bool>,
+    /// How far the view is panned when the prototype is bigger than the window.
+    pan: ViewPos,
+    /// How far the view can pan (points), and the zoom it shows at (from the last layout).
     pan_range: (f64, f64),
     zoom: f64,
-    /// Scrolling that carries on after the input let go.
-    fling: Option<Fling>,
-    /// The wheel's last target and its speed (units/s), while it turns.
-    wheel: Option<(Scroller, (f64, f64))>,
+    /// Scrolling that carries on after the input let go (one per thing it moves: the wheel's
+    /// axes can move two).
+    fling: Vec<Fling>,
+    /// The wheel while it turns.
+    wheel: Option<Wheel>,
     /// The frame shown last in each section (navigating to a section returns there).
     sections: HashMap<NodeId, NodeId>,
     /// The frame shown last, where it was placed and what it could draw into (comment pins go there).
     shown: Option<(NodeId, Place, Rect)>,
+    /// The screen shown last: the device's, else the presented frame's (window points).
+    screen: Option<Rect>,
+    /// The pinned layers drawn last ([`page_pins`]) and how far down they were (page units).
+    shown_pins: Vec<(FrameTex, f64)>,
     /// Controller buttons pressed since the last frame (as key trigger names), for the next frame.
     pub pads: Vec<String>,
     /// The prototype has gamepad triggers: the player polls the controllers.
@@ -362,13 +421,16 @@ impl Presenter {
             source: None,
             drag_scroll: None,
             view: PresentView::default(),
-            pan: None,
+            file_responsive: None,
+            pan: ViewPos::default(),
             pan_range: (0.0, 0.0),
             zoom: 1.0,
-            fling: None,
+            fling: Vec::new(),
             wheel: None,
             sections: HashMap::new(),
             shown: None,
+            screen: None,
+            shown_pins: Vec::new(),
             pads: Vec::new(),
             uses_pads: false,
             pads_held: 0,
@@ -378,7 +440,7 @@ impl Presenter {
 
     /// Stop scrolling motion (a fling, the wheel's coast, a drag).
     fn stop_scrolling(&mut self) {
-        self.fling = None;
+        self.fling.clear();
         self.wheel = None;
         self.drag_scroll = None;
     }
@@ -386,16 +448,32 @@ impl Presenter {
     /// Size the prototype another way; the view starts over at its top.
     pub fn set_scale(&mut self, scale: PresentScale) {
         self.view.scale = scale;
-        self.pan = None;
+        self.pan = ViewPos::default();
         self.stop_scrolling();
     }
 
-    /// The current offset of `t` (a frame's scroll, else the view's pan).
+    /// Present responsively or not (this presentation only: the file doesn't change); the view
+    /// starts over at its top.
+    pub fn set_responsive(&mut self, on: bool) {
+        if self.view.responsive != on {
+            self.view.responsive = on;
+            self.pan = ViewPos::default();
+            self.stop_scrolling();
+        }
+    }
+
+    /// The current offset of `t` (a frame's scroll in page units, else the view's pan in points).
     fn offset(&self, t: Scroller) -> (f64, f64) {
         match t {
             Scroller::Frame(f) => self.scroll.get(&f).copied().unwrap_or((0.0, 0.0)),
-            Scroller::View => self.pan.unwrap_or((self.pan_range.0 / 2.0, 0.0)),
+            Scroller::View => (self.pan.across * self.pan_range.0, self.pan.down * self.zoom),
         }
+    }
+
+    /// A page without a device scrolls through the window: the view pans it down (no device, and
+    /// the frame is taller than the window), as `layout` last found.
+    fn view_pages(&self, doc: &Document) -> bool {
+        self.pan_range.1 > 0.0 && page_settings(doc, self.current).device().is_none()
     }
 
     /// How far `t` scrolls (`base`: the player's document without scroll offsets).
@@ -417,27 +495,40 @@ impl Presenter {
                     self.rev += 1;
                 }
             }
-            Scroller::View => self.pan = Some(v),
+            // Across it keeps its place as a fraction of the range (nothing pans across: as it was).
+            Scroller::View => {
+                if self.pan_range.0 > 0.0 {
+                    self.pan.across = v.0 / self.pan_range.0;
+                }
+                if self.zoom > 0.0 {
+                    self.pan.down = v.1 / self.zoom;
+                }
+            }
         }
     }
 
-    /// Move a fling on to `now`; true while it is still moving.
+    /// Move the flings on to `now`; true while one is still moving.
     fn step_fling(&mut self, now: f64) -> bool {
-        let Some(mut f) = self.fling.take() else { return false };
-        let Some(base) = self.doc.as_ref() else { return false };
-        let r = self.limits(base, f.target);
-        let x = self.offset(f.target);
-        let dt = (now - f.at).clamp(0.0, 0.25);
-        f.at = now;
-        let (nx, vx, done_x) = fling_axis(x.0, f.vel.0, r.0, dt, f.decay, f.bounce);
-        let (ny, vy, done_y) = fling_axis(x.1, f.vel.1, r.1, dt, f.decay, f.bounce);
-        self.set_offset(f.target, (nx, ny));
-        f.vel = (vx, vy);
-        if done_x && done_y {
+        let Some(base) = self.doc.as_ref() else {
+            self.fling.clear();
             return false;
+        };
+        let ranges: Vec<(f64, f64)> = self.fling.iter().map(|f| self.limits(base, f.target)).collect();
+        let mut moving = Vec::new();
+        for (mut f, r) in std::mem::take(&mut self.fling).into_iter().zip(ranges) {
+            let x = self.offset(f.target);
+            let dt = (now - f.at).clamp(0.0, 0.25);
+            f.at = now;
+            let (nx, vx, done_x) = fling_axis(x.0, f.vel.0, r.0, dt, f.decay, f.bounce);
+            let (ny, vy, done_y) = fling_axis(x.1, f.vel.1, r.1, dt, f.decay, f.bounce);
+            self.set_offset(f.target, (nx, ny));
+            f.vel = (vx, vy);
+            if !(done_x && done_y) {
+                moving.push(f);
+            }
         }
-        self.fling = Some(f);
-        true
+        self.fling = moving;
+        !self.fling.is_empty()
     }
 
     /// Follow the editor's document: copy it the first time and whenever it changed, keeping the
@@ -531,8 +622,12 @@ impl Presenter {
 
     /// What "Scroll to" `dest` moves: every scrolling frame around it, innermost first, brings the
     /// layer (then the frame holding it) to its top-left as far as it can scroll, the innermost
-    /// `offset` short of it. Each entry is (frame, offset now, offset after).
-    fn scroll_to_layer(&self, doc: &Document, dest: NodeId, offset: [f64; 2]) -> Vec<ScrollMove> {
+    /// `offset` short of it. Each entry is (frame, offset now, offset after). A page scrolling
+    /// through the window (no device) then pans the view down to bring the layer (or the outermost
+    /// frame that scrolled) to the window's top, the offset left short of it: the view's (from, to),
+    /// page units. Across the view stays where it is (centred), so a link never shifts the page
+    /// sideways.
+    fn scroll_to_layer(&self, doc: &Document, dest: NodeId, offset: [f64; 2]) -> (Vec<ScrollMove>, Option<(f64, f64)>) {
         let mut out = Vec::new();
         let mut target = dest;
         // The innermost scrolling frame leaves `offset` before the layer.
@@ -551,16 +646,32 @@ impl Presenter {
             target = f;
             off = [0.0, 0.0];
         }
-        out
+        let view = (self.view_pages(doc) && (dest == self.current || doc.is_ancestor(self.current, dest)))
+            .then(|| {
+                // `target`'s ancestors up to the presented frame don't scroll (else they'd have
+                // been the target): its place in the frame is as designed.
+                let top = doc.world_bounds(target)?.y0 - doc.world_bounds(self.current)?.y0;
+                let max = self.pan_range.1 / self.zoom.max(1e-6);
+                let to = clamp_scroll((0.0, top - off[1]), (0.0, max)).1;
+                Some((self.pan.down, to))
+            })
+            .flatten();
+        (out, view)
     }
 
-    /// Scroll the presented frame to `(x, y)` (page units, clamped to what it can scroll).
+    /// Scroll the presented frame to `(x, y)` (page units, clamped to what it can scroll). A page
+    /// scrolling through the window (no device) that doesn't scroll down by itself pans the view
+    /// down to `y` instead (across it stays centred).
     pub fn scroll_to(&mut self, x: f64, y: f64) {
         let Some(doc) = self.doc.as_ref() else { return };
         if !x.is_finite() || !y.is_finite() {
             return;
         }
-        let to = clamp_scroll((x, y), self.range(doc, self.current));
+        let range = self.range(doc, self.current);
+        if range.1 <= 0.0 && self.view_pages(doc) {
+            self.pan.down = clamp_scroll((0.0, y), (0.0, self.pan_range.1 / self.zoom.max(1e-6))).1;
+        }
+        let to = clamp_scroll((x, y), range);
         self.scroll.insert(self.current, to);
         self.scroll_anim = None;
         self.stop_scrolling();
@@ -597,7 +708,8 @@ impl Presenter {
             "pan": [pan.0, pan.1],
             "panRange": [self.pan_range.0, self.pan_range.1],
             "zoom": self.zoom,
-            "flinging": self.fling.is_some(),
+            "screenRect": self.screen.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
+            "flinging": !self.fling.is_empty(),
             "gamepad": self.uses_pads,
         })
     }
@@ -609,17 +721,21 @@ impl Presenter {
             overlays: self.overlays.clone(),
             history: self.history.clone(),
             scroll: self.scroll.clone(),
+            pan: self.pan,
         })
     }
 
-    /// Start a transition from the state as it is now; call before changing the state.
+    /// Start a transition from the state as it is now; call before changing the state. The
+    /// outgoing frame keeps the place it was shown at (scrolled or panned as it was).
     fn begin(&mut self, transition: Transition, dur: f64, easing: Easing, now: f64) {
         let Some(from_doc) = self.display() else { return };
         let from_tex = self.textures.get(&self.current).cloned();
+        let from_place = self.shown.filter(|s| s.0 == self.current).map(|s| s.1);
+        let from_pins = if from_place.is_some() { self.shown_pins.clone() } else { Vec::new() };
         self.anim = if matches!(transition, Transition::Instant) || dur <= 0.0 {
             None
         } else {
-            Some(Anim { from_doc, from_frame: self.current, from_tex, transition, start: now, dur, easing, follow: None })
+            Some(Anim { from_doc, from_frame: self.current, from_tex, from_place, from_pins, transition, start: now, dur, easing, follow: None })
         };
     }
 
@@ -635,26 +751,32 @@ impl Presenter {
     }
 
     /// Show `frame`. It starts scrolled to the top unless `preserve` keeps the scroll position of
-    /// the frame being left (as far as `frame` can scroll).
+    /// the frame being left (as far as `frame` can scroll). Without a device the page scrolls
+    /// through the window: the view starts again centred and at the top (or as far down as it was,
+    /// preserving); on a device the view shows the device where it was.
     fn go(&mut self, frame: NodeId, transition: Transition, dur: f64, easing: Easing, now: f64, remember: bool, preserve: bool) {
         self.begin(transition, dur, easing, now);
         if remember {
             self.history.push(Visit { frame: self.current, transition, dur, easing });
         }
         let kept = self.scroll.get(&self.current).copied().filter(|_| preserve);
+        let down = if preserve { self.pan.down } else { 0.0 };
         self.overlays.clear();
         self.scroll.clear();
         self.scroll_anim = None;
         self.stop_scrolling();
-        self.pan = None;
         self.temp = None;
         self.current = frame;
         self.relayout();
-        if let Some(s) = kept
-            && let Some(doc) = self.doc.as_ref()
-        {
-            let to = clamp_scroll(s, self.range(doc, frame));
-            self.scroll.insert(frame, to);
+        if let Some(doc) = self.doc.as_ref() {
+            if let Some(s) = kept {
+                let to = clamp_scroll(s, self.range(doc, frame));
+                self.scroll.insert(frame, to);
+            }
+            if page_settings(doc, frame).device().is_none() {
+                // (`layout` keeps it within the new page's range.)
+                self.pan = ViewPos { down, ..ViewPos::default() };
+            }
         }
         self.arrive(now);
     }
@@ -669,7 +791,7 @@ impl Presenter {
         self.scroll.clear();
         self.scroll_anim = None;
         self.stop_scrolling();
-        self.pan = None;
+        self.pan = ViewPos::default();
         self.anim = None;
         self.temp = None;
         self.design = self.original.clone();
@@ -677,16 +799,29 @@ impl Presenter {
         self.arrive(now);
     }
 
+    /// Leave a "while hovering / pressing" state: back to the state before it, keeping the
+    /// scrolling done meanwhile (frames scrolled since keep their offsets, a wheel or a fling
+    /// carries on). Only when the state showed another screen does the view go back to where it
+    /// was, with the screen.
     fn revert(&mut self, now: f64) {
         let Some(t) = self.temp.take() else { return };
         self.begin(t.transition.reversed(), t.dur, t.easing, now);
+        let other_screen = t.snap.current != self.current;
         self.current = t.snap.current;
         self.design = Some(t.snap.doc);
         self.relayout();
         self.overlays = t.snap.overlays;
         self.history = t.snap.history;
-        self.scroll = t.snap.scroll;
-        self.stop_scrolling();
+        let mut scroll = t.snap.scroll;
+        scroll.extend(self.scroll.drain());
+        if let Some(laid) = self.doc.as_ref() {
+            scroll = scroll.into_iter().filter(|(f, _)| laid.contains(*f)).map(|(f, s)| (f, clamp_scroll(s, self.range(laid, f)))).collect();
+        }
+        self.scroll = scroll;
+        if other_screen {
+            self.pan = t.snap.pan;
+            self.stop_scrolling();
+        }
         self.hovered.clear();
         self.rev += 1;
     }
@@ -787,15 +922,22 @@ impl Presenter {
                 }
             }
             Action::ScrollTo { dest, offset } => {
-                let frames = self.scroll_to_layer(&doc, *dest, *offset);
-                if frames.is_empty() {
+                let (frames, view) = self.scroll_to_layer(&doc, *dest, *offset);
+                if frames.is_empty() && view.is_none() {
                     return false;
                 }
+                // It takes over from scrolling in progress.
+                self.stop_scrolling();
                 if matches!(tr, Transition::Instant) || dur <= 0.0 {
-                    self.scroll.extend(frames.iter().map(|(f, _, to)| (*f, *to)));
-                    self.rev += 1;
+                    if !frames.is_empty() {
+                        self.scroll.extend(frames.iter().map(|(f, _, to)| (*f, *to)));
+                        self.rev += 1;
+                    }
+                    if let Some((_, to)) = view {
+                        self.pan.down = to;
+                    }
                 } else {
-                    self.scroll_anim = Some(ScrollAnim { frames, start: now, dur, easing });
+                    self.scroll_anim = Some(ScrollAnim { frames, view, start: now, dur, easing });
                 }
                 true
             }
@@ -901,7 +1043,9 @@ impl Presenter {
         }
     }
 
-    fn texture(&mut self, ctx: &egui::Context, doc: &Document, id: NodeId, px_scale: f64, now: f64) -> Option<FrameTex> {
+    /// `id` rendered from `doc` (cached per revision), without the layers in `hide` (the page's
+    /// pinned layers, which draw from textures of their own).
+    fn texture(&mut self, ctx: &egui::Context, doc: &Document, id: NodeId, px_scale: f64, now: f64, hide: &[NodeId]) -> Option<FrameTex> {
         // Animated GIFs play from when the frame arrived: a new texture when one of them moves on,
         // and a wake-up for that moment (nothing else draws frames while it shows). egui wakes a
         // display frame before the time asked for, a little earlier still at times: ask that much
@@ -911,12 +1055,25 @@ impl Presenter {
         if let Some((_, next)) = clock {
             crate::repaint_in(ctx, next + f64::from(ctx.input(|i| i.predicted_dt)));
         }
-        let key = (self.rev, px_scale.to_bits(), clock.map_or(0, |c| c.0));
+        let key = (self.rev, px_scale.to_bits(), clock.map_or(0, |c| c.0), !hide.is_empty());
         if let Some(t) = self.textures.get(&id)
             && t.key == key
         {
             return Some(t.clone());
         }
+        let without;
+        let doc = if hide.is_empty() {
+            doc
+        } else {
+            let mut d = doc.clone();
+            for h in hide {
+                if let Some(n) = d.node_mut(*h) {
+                    n.visible = false;
+                }
+            }
+            without = d;
+            &without
+        };
         let bounds = figcraft_render::export_bounds(doc, id)?;
         let pix = figcraft_render::render_node_at(doc, id, texture_scale(ctx, bounds, px_scale), t)?;
         let img = crate::render_worker::screen_image(&pix, doc.color_profile);
@@ -1155,11 +1312,17 @@ pub fn scroll_range(doc: &Document, frame: NodeId) -> (f64, f64) {
 /// shows, as a device's screen shows a top-level frame: the frame itself is content then, so a
 /// frame taller than the screen scrolls through its whole height. Without a viewport the frame
 /// shows at its own size and what overflows it scrolls. Only the axes its overflow allows scroll.
+///
+/// A top-level frame on a screen that is set not to scroll still scrolls vertically: a page taller
+/// than the device's screen would otherwise be cut off with no way to see the rest (frames inside
+/// it keep their own setting).
 pub fn scroll_range_in(doc: &Document, frame: NodeId, viewport: Option<(f64, f64)>) -> (f64, f64) {
     let Some(n) = doc.node(frame) else { return (0.0, 0.0) };
-    if n.overflow == Overflow::None {
-        return (0.0, 0.0);
-    }
+    let overflow = match (n.overflow, viewport) {
+        (Overflow::None, Some(_)) => Overflow::Vertical,
+        (Overflow::None, None) => return (0.0, 0.0),
+        (o, _) => o,
+    };
     let (mut x1, mut y1) = (0.0f64, 0.0f64);
     for c in &n.children {
         let Some(cn) = doc.node(*c) else { continue };
@@ -1182,8 +1345,8 @@ pub fn scroll_range_in(doc: &Document, frame: NodeId, viewport: Option<(f64, f64
         }
         None => (n.width, n.height),
     };
-    let rx = if matches!(n.overflow, Overflow::Horizontal | Overflow::Both) { (x1 - vw).max(0.0) } else { 0.0 };
-    let ry = if matches!(n.overflow, Overflow::Vertical | Overflow::Both) { (y1 - vh).max(0.0) } else { 0.0 };
+    let rx = if matches!(overflow, Overflow::Horizontal | Overflow::Both) { (x1 - vw).max(0.0) } else { 0.0 };
+    let ry = if matches!(overflow, Overflow::Vertical | Overflow::Both) { (y1 - vh).max(0.0) } else { 0.0 };
     (if rx.is_finite() { rx } else { 0.0 }, if ry.is_finite() { ry } else { 0.0 })
 }
 
@@ -1333,6 +1496,61 @@ pub fn apply_scroll(doc: &Document, scroll: &HashMap<NodeId, (f64, f64)>) -> Doc
     out
 }
 
+/// The pinned layers of a page scrolling through the window (top-level `frame` presented without a
+/// device, taller than the window, the view panned `s` page units down and showing `vh` of it):
+/// each fixed child keeps its place in the window, pinned to the edges its vertical constraint
+/// names as on a device's screen ([`fit_viewport`]), and each sticky child scrolls until it
+/// reaches the window's top and stays there. Returns how far down each moves (page units), sticky
+/// ones first, then fixed ones, in layer order.
+///
+/// The view pans a texture of the page, which is cheap (nothing renders again as it scrolls), so
+/// the page is rendered once without its pinned layers and each of them once on its own, drawn
+/// where it stays put. Pages without fixed or sticky layers render as one texture.
+pub fn page_pins(disp: &Document, frame: NodeId, s: f64, vh: f64) -> Vec<(NodeId, f64)> {
+    let Some(n) = disp.node(frame) else { return Vec::new() };
+    if !s.is_finite() || !vh.is_finite() {
+        return Vec::new();
+    }
+    let dh = vh - n.height;
+    let (mut sticky, mut fixed) = (Vec::new(), Vec::new());
+    for &c in &n.children {
+        let Some(cn) = disp.node(c).filter(|c| c.visible) else { continue };
+        match cn.scroll_position {
+            ScrollPosition::Scrolls => {}
+            ScrollPosition::Fixed => {
+                let edge = match cn.constraints.vertical {
+                    VConstraint::Bottom => dh,
+                    VConstraint::Center => dh / 2.0,
+                    _ => 0.0,
+                };
+                fixed.push((c, s + edge));
+            }
+            ScrollPosition::Sticky => {
+                let y0 = figcraft_geom::transform_rect_bbox(cn.transform, cn.local_rect()).y0;
+                sticky.push((c, if y0 >= 0.0 && y0 < s { s - y0 } else { 0.0 }));
+            }
+        }
+    }
+    sticky.extend(fixed);
+    sticky
+}
+
+/// `disp` with `pins` ([`page_pins`]) moved down by their offsets and on top of the other layers
+/// of `frame` (in that order), so they take clicks where they are drawn.
+fn pinned(mut d: Document, frame: NodeId, pins: &[(NodeId, f64)]) -> Document {
+    for &(id, dy) in pins {
+        if let Some(m) = d.node_mut(id) {
+            m.transform = Affine::translate((0.0, dy)) * m.transform;
+        }
+    }
+    if let Some(n) = d.node_mut(frame) {
+        let mut order: Vec<NodeId> = n.children.iter().copied().filter(|c| !pins.iter().any(|p| p.0 == *c)).collect();
+        order.extend(pins.iter().map(|p| p.0));
+        n.children = order;
+    }
+    d
+}
+
 /// Fixed layers draw (and take clicks) above the content that scrolls under them: each frame's
 /// fixed children move to the top of its children, keeping their order (for the player's copy).
 pub fn raise_fixed(doc: &mut Document) {
@@ -1441,7 +1659,12 @@ fn find_trigger(doc: &Document, id: NodeId, want: impl Fn(&Trigger) -> bool) -> 
 // The player UI, shared by the full-window presenter and the preview pane.
 
 struct Layout {
+    /// The player's document as shown (pinned layers where they stay put).
     disp: Document,
+    /// With pinned layers: the document as laid out, without their offsets (what textures render).
+    base: Option<Document>,
+    /// The presented frame's pinned layers and how far down they are drawn ([`page_pins`]).
+    pins: Vec<(NodeId, f64)>,
     scale: f64,
     place: Place,
     /// What shows the prototype: the device's screen, else the presented frame itself.
@@ -1468,6 +1691,17 @@ impl Layout {
             None => (current, self.place, self.clip),
         }
     }
+
+    /// The part of the screen in the window (a page taller than the window shows only some).
+    fn visible(&self) -> Rect {
+        visible_part(self.screen, self.clip)
+    }
+}
+
+/// The part of `screen` inside `clip`, else `screen` itself.
+fn visible_part(screen: Rect, clip: Rect) -> Rect {
+    let v = screen.intersect(clip);
+    if v.is_positive() { v } else { screen }
 }
 
 /// The soonest "after delay" interaction in `root`'s subtree that hasn't fired yet, and the seconds
@@ -1522,18 +1756,31 @@ fn body_outset(device: &str, size: Vec2, landscape: bool) -> (f32, f32, f32) {
 
 /// Place the presented frame in `area`: on its device's screen (the whole device sized by the
 /// view's scale option), else the frame itself. Fit and 100% keep the chrome's padding from the
-/// edges; Fit never goes above 100%. What doesn't fit the window pans (`Presenter::pan`). The
-/// preview pane always fits. A responsive prototype's frame is first resized to the device's
-/// screen, or without a device to the whole area (shown at 100%).
+/// edges along an axis the prototype fits, centred; along one it overflows it uses the whole area
+/// and pans (`Presenter::pan`): a page taller than the window shows from its top, centred across,
+/// and scrolls through the window like a web page. Fit never goes above 100%. The preview pane
+/// always fits. A responsive prototype's frame is first resized to the device's screen, or
+/// without a device to the area's width (keeping its height; shown at 100%).
 fn layout(p: &mut Presenter, area: Rect, chrome: Chrome) -> Option<Layout> {
     let settings = page_settings(p.doc.as_ref()?, p.current);
+    // Responsive is the viewer's: it starts from the file's setting and follows it when it changes.
+    if p.file_responsive != Some(settings.responsive) {
+        p.file_responsive = Some(settings.responsive);
+        p.view.responsive = settings.responsive;
+    }
     let (device, landscape) = (settings.device(), settings.landscape());
-    let fills = settings.responsive && device.is_none();
-    let whole_area = (f64::from(area.width().round()), f64::from(area.height().round()));
-    p.respond_to(settings.responsive.then(|| device.map_or(whole_area, |d| (d.width, d.height))));
+    let fills = p.view.responsive && device.is_none();
+    // Without a device a responsive frame takes the window's width and keeps its designed height
+    // (one that hugs its content hugs it again); what's below the window scrolls.
+    let designed = p.design.as_ref().and_then(|d| d.node(p.current)).map(|n| n.height);
+    let screen_size = match device {
+        Some(d) => Some((d.width, d.height)),
+        None => designed.map(|h| (f64::from(area.width().round()), h)),
+    };
+    p.respond_to(screen_size.filter(|_| p.view.responsive));
     let disp = p.display()?;
     let fb = disp.world_bounds(p.current)?;
-    let view = if chrome.pane { PresentView::default() } else { p.view };
+    let view = if chrome.pane { PresentView { scale: PresentScale::Fit, ..p.view } } else { p.view };
     // Custom sizes are just a screen: no body.
     let body = device.filter(|d| view.device_frame && !d.colors.is_empty());
     let pad = if !fills && matches!(view.scale, PresentScale::Fit | PresentScale::Actual) { chrome.pad } else { 0.0 };
@@ -1564,32 +1811,48 @@ fn layout(p: &mut Presenter, area: Rect, chrome: Chrome) -> Option<Layout> {
     let scale = if scale.is_finite() { scale.clamp(0.01, max) } else { 0.01 };
     let (size, x, top, whole) = outer(scale);
     p.zoom = scale;
-    // What's bigger than the window pans: starting centred across and at the top.
-    let over = |d: f32| if d > 0.5 { d } else { 0.0 };
-    let excess = vec2(over(whole.x - avail.width()), over(whole.y - avail.height()));
-    p.pan_range = (f64::from(excess.x), f64::from(excess.y));
+    // What's bigger than the window pans, from the area's edge (where the range starts) and by
+    // how much; what fits is centred.
+    let span = |len: f32, lo: f32, hi: f32, padded_lo: f32, padded_hi: f32| {
+        if len <= padded_hi - padded_lo + 0.5 {
+            (padded_lo, 0.0)
+        } else {
+            let excess = len - (hi - lo);
+            (lo, if excess > 0.5 { excess } else { 0.0 })
+        }
+    };
+    let (x0, ex) = span(whole.x, area.min.x, area.max.x, avail.min.x, avail.max.x);
+    let (y0, ey) = span(whole.y, area.min.y, area.max.y, avail.min.y, avail.max.y);
+    p.pan_range = (f64::from(ex), f64::from(ey));
     // While a drag or fling moves the view it may stretch past the ends; otherwise it stays in range.
-    let live = matches!(p.drag_scroll, Some((Scroller::View, _))) || p.fling.is_some_and(|f| f.target == Scroller::View);
+    let live = matches!(p.drag_scroll, Some((Scroller::View, _))) || p.fling.iter().any(|f| f.target == Scroller::View);
     if !live {
-        p.pan = p.pan.map(|v| clamp_scroll(v, p.pan_range));
+        let across = if p.pan.across.is_finite() { p.pan.across.clamp(0.0, 1.0) } else { 0.5 };
+        let down = clamp_scroll((0.0, p.pan.down), (0.0, p.pan_range.1 / scale)).1;
+        p.pan = ViewPos { across, down };
     }
     let pan = p.offset(Scroller::View);
-    let along = |excess: f32, min: f32, centre: f32, len: f32, pan: f64| if excess > 0.0 { min - pan as f32 } else { centre - len / 2.0 };
-    let min = pos2(along(excess.x, avail.min.x, area.center().x, whole.x, pan.0), along(excess.y, avail.min.y, area.center().y, whole.y, pan.1));
+    let along = |excess: f32, start: f32, centre: f32, len: f32, pan: f64| if excess > 0.0 { start - pan as f32 } else { centre - len / 2.0 };
+    let min = pos2(along(ex, x0, area.center().x, whole.x, pan.0), along(ey, y0, area.center().y, whole.y, pan.1));
     let screen = Rect::from_min_size(min + vec2(x, top), size);
     let place = Place::centered(fb, screen.center(), scale);
+    let clip = if device.is_some() { screen } else { area };
+    // Overlays sit on the part of the screen in the window (a page scrolling through it shows only some).
+    let on = visible_part(screen, clip);
     let place_overlay = |o: &OverlayState| {
         let ob = disp.world_bounds(o.id)?;
         let size = vec2((ob.width() * scale) as f32, (ob.height() * scale) as f32);
         let offset = o.offset.map(|[x, y]| vec2((x * scale) as f32, (y * scale) as f32));
-        let r = overlay_rect(o.position, screen, size, o.anchor, offset);
+        let r = overlay_rect(o.position, on, size, o.anchor, offset);
         Some((o.id, Place { page_min: (ob.x0, ob.y0), origin: r.min, scale }, r))
     };
     let overlays = p.overlays.iter().filter_map(place_overlay).collect();
     let closing = p.closing.iter().filter_map(|(_, o)| place_overlay(o)).collect();
-    let clip = if device.is_some() { screen } else { area };
     let color = body.and(settings.device_color());
-    Some(Layout { disp, scale, place, screen, clip, device, landscape, color, overlays, closing })
+    // A page scrolling through the window keeps its fixed and sticky layers put (`page_pins`).
+    let pins = if device.is_none() && ey > 0.0 { page_pins(&disp, p.current, pan.1 / scale, f64::from(area.height()) / scale) } else { Vec::new() };
+    let (disp, base) = if pins.is_empty() { (disp, None) } else { (pinned(disp.clone(), p.current, &pins), Some(disp)) };
+    Some(Layout { disp, base, pins, scale, place, screen, clip, device, landscape, color, overlays, closing })
 }
 
 /// Where the player sits: the whole window or the preview pane.
@@ -1617,8 +1880,6 @@ enum BarAction {
     Present,
     /// The full-window presenter's options menu (handled in the bar).
     Options,
-    /// Turn responsive presentation on or off (saved in the file: `proto.settings`).
-    Responsive(bool),
     /// Show or hide the comments on the presented frame.
     Comments,
     /// Show or hide the Inspect panel.
@@ -1674,11 +1935,8 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         app.ui.comments.close();
     }
     finish(app, &mut pres);
-    // The options carry over to the next presentation.
+    // The options carry over to the next presentation (Responsive starts from the file's setting).
     app.ui.present_view = pres.view;
-    if let Some(BarAction::Responsive(on)) = action {
-        app.run("proto.settings", json!({"responsive": on}));
-    }
     if action == Some(BarAction::Close) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         return;
     }
@@ -1972,21 +2230,22 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         ui.painter().text(area.center(), Align2::CENTER_CENTER, tr("Select a frame to preview it"), regular(12.0), Color32::from_gray(170));
         return action;
     }
-    // Scroll animation (Scroll to).
+    // Scroll animation (Scroll to): frames scroll, a page scrolling through the window pans.
     if let Some(sa) = &p.scroll_anim {
         let raw = ((now - sa.start) / sa.dur.max(1e-3)).clamp(0.0, 1.0);
         let e = sa.easing.eval(raw);
         for (f, from, to) in &sa.frames {
             p.scroll.insert(*f, (lerp(from.0, to.0, e), lerp(from.1, to.1, e)));
         }
-        p.rev += 1;
+        if !sa.frames.is_empty() {
+            p.rev += 1;
+        }
+        if let Some((from, to)) = sa.view {
+            p.pan.down = lerp(from, to, e);
+        }
         if raw >= 1.0 {
             p.scroll_anim = None;
         }
-        ctx.request_repaint();
-    }
-    // Scrolling that carries on after the input let go (repaints only while it moves).
-    if p.step_fling(now) {
         ctx.request_repaint();
     }
     let resp = ui.interact(area, ui.id().with("present_area"), Sense::click_and_drag());
@@ -1995,8 +2254,16 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         // The pane only takes the keyboard while the pointer is over it.
         input(p, &ctx, &l, over, chrome.keys && (!chrome.pane || over), chrome.pane, now);
     }
+    // Scrolling that carries on after the input let go, moved after the input: wheel input in this
+    // frame (the system's own momentum) stops a coast before it moves again. Repaints while it
+    // moves, and while the wheel waits to coast (nothing else wakes the window once the wheel
+    // stops sending input).
+    if p.step_fling(now) || p.wheel.is_some() {
+        ctx.request_repaint();
+    }
     let Some(l) = layout(p, area, chrome) else { return action };
     p.shown = Some((p.current, l.place, l.clip.intersect(area)));
+    p.screen = Some(l.screen);
     let painter = ui.painter_at(area);
     let body = l.device.zip(l.color);
     if l.device.is_some() {
@@ -2108,8 +2375,7 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
             ui.painter().text(br.center(), Align2::CENTER_CENTER, shown, regular(11.5), text);
         }
         if *act == BarAction::Options {
-            let menu = crate::right::menu_popup(&resp).width(220.0).show(|ui| options_menu(p, ui, device, settings.responsive, now));
-            action = action.or(menu.and_then(|m| m.inner));
+            crate::right::menu_popup(&resp).width(220.0).show(|ui| options_menu(p, ui, device, now));
         } else if resp.clicked() {
             action = Some(*act);
         }
@@ -2154,23 +2420,23 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
 }
 
 /// The full-window presenter's options menu: how the prototype is sized (Z cycles them), whether
-/// the frame is responsive (a file setting: the frame takes the window's size, or on a device the
-/// screen's, instead of being scaled or shown at a fixed size), the device's body, hotspot hints,
-/// restart (R).
-fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, responsive: bool, now: f64) -> Option<BarAction> {
+/// the frame is responsive (a viewing option starting from the file's setting: the frame takes the
+/// window's width, or on a device the screen's size, instead of being scaled or shown at a fixed
+/// size; the file doesn't change), the device's body, hotspot hints, restart (R).
+fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, now: f64) {
     use crate::right::menu_check;
-    let mut action = None;
+    let responsive = p.view.responsive;
     let on_device = device.is_some();
-    // Without a device, responsive is one of the sizes: the frame fills the window at 100%.
+    // Without a device, responsive is one of the sizes: the frame takes the window's width at 100%.
     if !on_device && menu_check(ui, responsive, tr("Responsive"), "") {
-        action = Some(BarAction::Responsive(true));
+        p.set_responsive(true);
         ui.close();
     }
     for s in PresentScale::options(on_device) {
         if menu_check(ui, p.view.scale == *s && (on_device || !responsive), s.label(on_device), "") {
             p.set_scale(*s);
-            if !on_device && responsive {
-                action = Some(BarAction::Responsive(false));
+            if !on_device {
+                p.set_responsive(false);
             }
             ui.close();
         }
@@ -2184,7 +2450,7 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, responsi
     if on_device {
         for (on, label) in [(true, tr("Responsive")), (false, tr("Fixed size"))] {
             if menu_check(ui, responsive == on, label, "") {
-                action = (responsive != on).then_some(BarAction::Responsive(on));
+                p.set_responsive(on);
                 ui.close();
             }
         }
@@ -2202,16 +2468,16 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, responsi
         p.restart(p.start, now);
         ui.close();
     }
-    action
 }
 
 /// Scrolling frames under the screen point `q`, innermost first: those of `root` (in the display
-/// document `disp`) that can scroll (`base` is the player's document without scroll offsets).
+/// document `disp`) that can scroll (`base` is the player's document without scroll offsets). The
+/// presented frame on a device's screen scrolls even when set not to ([`scroll_range_in`]).
 fn scrollers_at(p: &Presenter, base: &Document, disp: &Document, root: NodeId, place: &Place, q: Pos2) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = disp
         .subtree(root)
         .into_iter()
-        .filter(|f| disp.node(*f).is_some_and(|n| n.visible && n.overflow != Overflow::None))
+        .filter(|f| disp.node(*f).is_some_and(|n| n.visible && (n.overflow != Overflow::None || *f == p.current)))
         .filter(|f| disp.world_bounds(*f).is_some_and(|b| place.rect(b).contains(q)))
         .filter(|f| p.range(base, *f) != (0.0, 0.0))
         .collect();
@@ -2232,11 +2498,115 @@ fn units_per_point(t: Scroller, scale: f64) -> f64 {
     }
 }
 
+/// The wheel's movement without the axis it hardly moves along (under a third of the other): a
+/// trackpad's jitter across a vertical scroll doesn't scroll sideways, nor the other way round.
+fn lock_axes(d: Vec2) -> Vec2 {
+    let (ax, ay) = (d.x.abs(), d.y.abs());
+    if ax < ay / 3.0 {
+        vec2(0.0, d.y)
+    } else if ay < ax / 3.0 {
+        vec2(d.x, 0.0)
+    } else {
+        d
+    }
+}
+
+/// The wheel (or trackpad) turned by `delta` (points) this frame with the pointer at `pos`: each
+/// axis scrolls the innermost frame under the pointer that can still move that way, else pans a
+/// view bigger than the window, so a carousel takes only the sideways part and the page under it
+/// the rest. When it stops it coasts on, slowing down: at once after a mouse wheel, after a
+/// trackpad only once it has been still for [`WHEEL_GRACE`] (its system's momentum is more wheel
+/// input, which carries the scroll on instead and stops a coast before it moves again). A speed
+/// older than [`WHEEL_STALE`] doesn't coast.
+#[allow(clippy::too_many_arguments)]
+fn wheel_input(p: &mut Presenter, l: &Layout, root: NodeId, place: &Place, pos: Option<Pos2>, delta: Vec2, touchpad: bool, dt: f64, now: f64) {
+    let d = lock_axes(delta);
+    let mut moved: [Option<(Scroller, f64)>; 2] = [None, None];
+    let turned = d != Vec2::ZERO && d.x.is_finite() && d.y.is_finite() && pos.is_some();
+    if turned
+        && let Some(q) = pos
+        && let Some(base) = p.doc.clone()
+    {
+        p.fling.clear();
+        let mut targets: Vec<Scroller> = scrollers_at(p, &base, &l.disp, root, place, q).into_iter().map(Scroller::Frame).collect();
+        if p.pan_range != (0.0, 0.0) {
+            targets.push(Scroller::View);
+        }
+        for (axis, by) in [d.x, d.y].into_iter().enumerate() {
+            if by == 0.0 {
+                continue;
+            }
+            for &t in &targets {
+                let u = units_per_point(t, l.scale);
+                let (cur, r) = (p.offset(t), p.limits(&base, t));
+                let (c, lim) = if axis == 0 { (cur.0, r.0) } else { (cur.1, r.1) };
+                let next = clamp_scroll((c - f64::from(by) * u, 0.0), (lim, 0.0)).0;
+                if (next - c).abs() > 1e-6 {
+                    p.set_offset(t, if axis == 0 { (next, cur.1) } else { (cur.0, next) });
+                    moved[axis] = Some((t, (next - c) / dt));
+                    break;
+                }
+            }
+        }
+    }
+    if moved.iter().any(Option::is_some) {
+        p.scroll_anim = None;
+        // Each axis's speed, smoothed over ~50 ms whatever the frame rate.
+        let a = 1.0 - (-dt / 0.05).exp();
+        let was = p.wheel;
+        let smooth =
+            |m: Option<(Scroller, f64)>, prev: Option<(Scroller, f64)>| m.map(|(t, v)| (t, prev.filter(|w| w.0 == t).map_or(v, |w| lerp(w.1, v, a))));
+        p.wheel = Some(Wheel {
+            x: smooth(moved[0], was.and_then(|w| w.x)),
+            y: smooth(moved[1], was.and_then(|w| w.y)),
+            at: now,
+            touchpad: touchpad || was.is_some_and(|w| w.touchpad),
+        });
+        return;
+    }
+    // Turned with nothing left to move that way: no coast.
+    if turned {
+        p.wheel = None;
+        return;
+    }
+    let Some(w) = p.wheel else { return };
+    let quiet = now - w.at;
+    let touchpad = touchpad || w.touchpad;
+    if quiet > WHEEL_STALE + if touchpad { WHEEL_GRACE } else { 0.0 } {
+        p.wheel = None;
+        return;
+    }
+    // A trackpad's last input (an end phase too) keeps it waiting.
+    if touchpad && (quiet < WHEEL_GRACE || delta != Vec2::ZERO) {
+        return;
+    }
+    p.wheel = None;
+    let mut flings: Vec<Fling> = Vec::new();
+    for (axis, m) in [w.x, w.y].into_iter().enumerate() {
+        let Some((t, v)) = m.filter(|(t, v)| v.is_finite() && v.abs() > COAST_MIN * units_per_point(*t, l.scale)) else { continue };
+        let i = match flings.iter().position(|f| f.target == t) {
+            Some(i) => i,
+            None => {
+                flings.push(Fling { target: t, vel: (0.0, 0.0), decay: DECAY_WHEEL, bounce: false, at: now });
+                flings.len() - 1
+            }
+        };
+        if let Some(f) = flings.get_mut(i) {
+            if axis == 0 {
+                f.vel.0 = v;
+            } else {
+                f.vel.1 = v;
+            }
+        }
+    }
+    p.fling = flings;
+}
+
 /// Pointer, wheel, keys and timers. `over_area`: the pointer is over the player; `keys_on`: the
 /// player takes the keyboard; `pane`: it plays in the preview pane (which always fits).
 #[allow(clippy::too_many_arguments)]
 fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, keys_on: bool, pane: bool, now: f64) {
-    let (pos, pressed, released, down, wheel, velocity, dt, keys) = ctx.input(|i| {
+    let (pos, pressed, released, down, wheel, touchpad, velocity, dt, keys) = ctx.input(|i| {
         let keys: Vec<(egui::Key, egui::Modifiers)> = i
             .events
             .iter()
@@ -2245,12 +2615,18 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
                 _ => None,
             })
             .collect();
+        // Wheel input from a trackpad: with touch phases, or the small steps egui doesn't smooth.
+        let touchpad = i.events.iter().any(|e| {
+            matches!(e, egui::Event::MouseWheel { unit, delta, phase, .. }
+                if *phase != egui::TouchPhase::Move || (*unit == egui::MouseWheelUnit::Point && delta.length() < 8.0))
+        });
         (
             i.pointer.hover_pos(),
             i.pointer.button_pressed(egui::PointerButton::Primary),
             i.pointer.button_released(egui::PointerButton::Primary),
             i.pointer.primary_down(),
             i.smooth_scroll_delta,
+            touchpad,
             i.pointer.velocity(),
             f64::from(i.unstable_dt).clamp(1.0 / 500.0, 0.1),
             keys,
@@ -2274,13 +2650,15 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
         let u = units_per_point(t, l.scale);
         let r = p.doc.as_ref().map_or((0.0, 0.0), |b| p.limits(b, t));
         let along = |v: f32, r: f64| if r > 0.0 { -f64::from(v) * u } else { 0.0 };
-        p.fling = Some(Fling { target: t, vel: (along(velocity.x, r.0), along(velocity.y, r.1)), decay: DECAY_DRAG, bounce: true, at: now });
+        p.fling = vec![Fling { target: t, vel: (along(velocity.x, r.0), along(velocity.y, r.1)), decay: DECAY_DRAG, bounce: true, at: now }];
     }
     // The active layer: the top overlay, else the frame.
     let (root, place, clip) = l.active(p.current);
     let doc = &l.disp;
     let hot = hotspots(doc, root, &place, clip);
     p.hot.clone_from(&hot);
+    // The wheel first: a trigger firing or a hover state reverting in this frame doesn't drop it.
+    wheel_input(p, l, root, &place, pos.filter(|_| over_area), wheel, touchpad, dt, now);
     if p.fire_waiting(root, now) {
         return;
     }
@@ -2291,41 +2669,6 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
             p.revert(now);
             return;
         }
-    }
-    // The wheel scrolls the innermost frame under the pointer that can still move that way, else
-    // pans a view bigger than the window. When it stops it coasts on, slowing down.
-    if wheel != Vec2::ZERO
-        && let Some(q) = pos
-        && let Some(base) = p.doc.clone()
-    {
-        let mut targets: Vec<Scroller> = scrollers_at(p, &base, doc, root, &place, q).into_iter().map(Scroller::Frame).collect();
-        if p.pan_range != (0.0, 0.0) {
-            targets.push(Scroller::View);
-        }
-        let mut moved = None;
-        for t in targets {
-            let u = units_per_point(t, l.scale);
-            let cur = p.offset(t);
-            let next = clamp_scroll((cur.0 - f64::from(wheel.x) * u, cur.1 - f64::from(wheel.y) * u), p.limits(&base, t));
-            if (next.0 - cur.0).abs() > 1e-6 || (next.1 - cur.1).abs() > 1e-6 {
-                p.set_offset(t, next);
-                p.scroll_anim = None;
-                p.fling = None;
-                moved = Some((t, ((next.0 - cur.0) / dt, (next.1 - cur.1) / dt)));
-                break;
-            }
-        }
-        // The wheel's speed, smoothed over ~50 ms whatever the frame rate.
-        p.wheel = moved.map(|(t, inst)| {
-            let prev = p.wheel.filter(|w| w.0 == t).map_or(inst, |w| w.1);
-            let a = 1.0 - (-dt / 0.05).exp();
-            (t, (lerp(prev.0, inst.0, a), lerp(prev.1, inst.1, a)))
-        });
-    } else if wheel == Vec2::ZERO
-        && let Some((t, v)) = p.wheel.take()
-        && v.0.hypot(v.1) > COAST_MIN * units_per_point(t, l.scale)
-    {
-        p.fling = Some(Fling { target: t, vel: v, decay: DECAY_WHEEL, bounce: false, at: now });
     }
     let hits: Vec<(NodeId, Rect)> = hot.iter().rev().filter(|(_, r)| pos.is_some_and(|q| r.contains(q))).copied().collect();
     if !hits.is_empty() {
@@ -2367,8 +2710,13 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
         p.press = pos;
         p.dragged = false;
         // Pressing catches a fling (one springing back from past an end carries on).
-        let overscrolled = |f: &Fling| p.doc.as_ref().is_some_and(|b| clamp_scroll(p.offset(f.target), p.limits(b, f.target)) != p.offset(f.target));
-        p.fling = p.fling.filter(overscrolled);
+        let overscrolled: Vec<bool> = p
+            .fling
+            .iter()
+            .map(|f| p.doc.as_ref().is_some_and(|b| clamp_scroll(p.offset(f.target), p.limits(b, f.target)) != p.offset(f.target)))
+            .collect();
+        let mut keep = overscrolled.into_iter();
+        p.fling.retain(|_| keep.next().unwrap_or(false));
         p.wheel = None;
         if let (Some((_, _, orect)), Some(o), Some(q)) = (l.overlays.last(), p.overlays.last(), pos)
             && !orect.contains(q)
@@ -2413,21 +2761,27 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
                     .transition
                     .direction()
                     .map_or_else(|| if d.x.abs() >= d.y.abs() { (d.x.signum(), 0.0) } else { (0.0, d.y.signum()) }, direction_vec);
-                let len = if x != 0.0 { l.screen.width() } else { l.screen.height() };
+                let len = if x != 0.0 { l.visible().width() } else { l.visible().height() };
                 a.follow = Some((start, vec2(x, y), len.max(1.0)));
             }
             return;
         }
-        // Otherwise the drag scrolls the innermost frame under it that scrolls, else pans a view
-        // bigger than the window.
+        // Otherwise the drag scrolls the innermost frame under it that scrolls along the drag's
+        // main axis (a vertical drag on a carousel scrolls the page), else pans a view bigger than
+        // the window; failing those, what scrolls the other way.
         if let Some(base) = p.doc.clone() {
-            let target = scrollers_at(p, &base, doc, root, &place, start)
-                .first()
-                .copied()
-                .map(Scroller::Frame)
-                .or((p.pan_range != (0.0, 0.0)).then_some(Scroller::View));
+            let mut targets: Vec<Scroller> = scrollers_at(p, &base, doc, root, &place, start).into_iter().map(Scroller::Frame).collect();
+            if p.pan_range != (0.0, 0.0) {
+                targets.push(Scroller::View);
+            }
+            let sideways = d.x.abs() >= d.y.abs();
+            let along = |t: &&Scroller| {
+                let r = p.limits(&base, **t);
+                if sideways { r.0 > 0.0 } else { r.1 > 0.0 }
+            };
+            let target = targets.iter().find(along).or(targets.first()).copied();
             if let Some(t) = target {
-                p.fling = None;
+                p.fling.clear();
                 p.drag_scroll = Some((t, clamp_scroll(p.offset(t), p.limits(&base, t))));
             }
         }
@@ -2545,11 +2899,22 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
     }
 }
 
+/// Where a pinned layer's texture `t` draws, `dy` page units below its place in the page.
+fn pin_rect(place: &Place, t: &FrameTex, dy: f64) -> Rect {
+    place.rect(t.bounds).translate(vec2(0.0, (dy * place.scale) as f32))
+}
+
 fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Layout, now: f64) {
     let ppp = f64::from(ctx.pixels_per_point());
     let px = l.scale * ppp;
     let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-    let to_tex = p.texture(ctx, &l.disp, p.current, px, now);
+    // A page with pinned layers: the page without them, then each from its own texture where it
+    // stays put (none renders again as the view pans).
+    let hide: Vec<NodeId> = l.pins.iter().map(|(id, _)| *id).collect();
+    let base = l.base.as_ref().unwrap_or(&l.disp);
+    let to_tex = p.texture(ctx, base, p.current, px, now, &hide);
+    let to_pins: Vec<(FrameTex, f64)> = l.pins.iter().filter_map(|(id, dy)| p.texture(ctx, base, *id, px, now, &[]).map(|t| (t, *dy))).collect();
+    p.shown_pins.clone_from(&to_pins);
     // Transition progress.
     let mut drawn = false;
     if let Some(a) = &p.anim {
@@ -2559,7 +2924,8 @@ fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Lay
         } else {
             ctx.request_repaint();
             let e = a.easing.eval(raw);
-            let from_place = a.from_doc.world_bounds(a.from_frame).map(|fb| Place::centered(fb, l.screen.center(), l.scale));
+            // The outgoing frame stays where it was shown (scrolled as it was).
+            let from_place = a.from_place.or_else(|| a.from_doc.world_bounds(a.from_frame).map(|fb| Place::centered(fb, l.screen.center(), l.scale)));
             if matches!(a.transition, Transition::SmartAnimate) {
                 #[cfg(not(target_arch = "wasm32"))]
                 let t0 = std::time::Instant::now();
@@ -2592,17 +2958,27 @@ fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Lay
                 let from_rect = fp.rect(ft.bounds);
                 let from_frame_rect = a.from_doc.world_bounds(a.from_frame).map(|b| fp.rect(b)).unwrap_or(from_rect);
                 let to_rect = l.place.rect(to.bounds);
+                // Frames move by the part of them in the window (a tall page shows only some).
                 let off = |r: Rect, o: (f32, f32)| vec2(r.width() * o.0, r.height() * o.1);
+                let (from_off, to_off) = (off(visible_part(from_frame_rect, l.clip), f.from_off), off(l.visible(), f.to_off));
                 // Without a device a dissolve shows both frames whole; on one, the screen clips.
                 let dissolve_both = l.device.is_none() && matches!(a.transition, Transition::Dissolve);
                 let clip = painter.with_clip_rect(if dissolve_both { l.screen.union(from_frame_rect) } else { l.screen });
                 let draw_from = |p: &egui::Painter| {
                     if f.from_alpha > 0.0 {
-                        p.image(ft.tex.id(), from_rect.translate(off(from_frame_rect, f.from_off)), uv, Color32::WHITE.gamma_multiply(f.from_alpha));
+                        let tint = Color32::WHITE.gamma_multiply(f.from_alpha);
+                        p.image(ft.tex.id(), from_rect.translate(from_off), uv, tint);
+                        for (t, dy) in &a.from_pins {
+                            p.image(t.tex.id(), pin_rect(&fp, t, *dy).translate(from_off), uv, tint);
+                        }
                     }
                 };
                 let draw_to = |p: &egui::Painter| {
-                    p.image(to.tex.id(), to_rect.translate(off(l.screen, f.to_off)), uv, Color32::WHITE.gamma_multiply(f.to_alpha));
+                    let tint = Color32::WHITE.gamma_multiply(f.to_alpha);
+                    p.image(to.tex.id(), to_rect.translate(to_off), uv, tint);
+                    for (t, dy) in &to_pins {
+                        p.image(t.tex.id(), pin_rect(&l.place, t, *dy).translate(to_off), uv, tint);
+                    }
                 };
                 if f.from_on_top {
                     draw_to(&clip);
@@ -2616,7 +2992,11 @@ fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Lay
         }
     }
     if !drawn && let Some(to) = &to_tex {
-        painter.with_clip_rect(l.clip).image(to.tex.id(), l.place.rect(to.bounds), uv, Color32::WHITE);
+        let clip = painter.with_clip_rect(l.clip);
+        clip.image(to.tex.id(), l.place.rect(to.bounds), uv, Color32::WHITE);
+        for (t, dy) in &to_pins {
+            clip.image(t.tex.id(), pin_rect(&l.place, t, *dy), uv, Color32::WHITE);
+        }
     }
     // Overlays (each with its background and opening transition); closing ones run it backwards.
     let mut ovs: Vec<(f64, OverlayState)> =
@@ -2645,7 +3025,7 @@ fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Lay
             let c = crate::theme::doc_c32(ctx, bgc);
             on_screen.rect_filled(l.screen, CornerRadius::ZERO, c.gamma_multiply(raw as f32));
         }
-        if let Some(tex) = p.texture(ctx, &l.disp, *id, px, now) {
+        if let Some(tex) = p.texture(ctx, &l.disp, *id, px, now, &[]) {
             let r = place.rect(tex.bounds).translate(vec2(orect.width() * f.to_off.0, orect.height() * f.to_off.1));
             on_screen.image(tex.tex.id(), r, uv, Color32::WHITE.gamma_multiply(f.to_alpha));
         }
@@ -2679,6 +3059,10 @@ mod tail_tests;
 #[cfg(test)]
 #[path = "present_delay_tests.rs"]
 mod delay_tests;
+
+#[cfg(test)]
+#[path = "present_page_tests.rs"]
+mod page_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2873,9 +3257,15 @@ mod tests {
         assert_eq!(disp.world_bounds(list).unwrap().y0, 800.0);
         p.scroll_to(0.0, 99_999.0);
         assert_eq!(p.scroll[&a], (0.0, 1148.0), "clamped to the range");
-        // Without scrolling the screen only clips; without a device the frame shows whole.
+        // Set not to scroll, a top-level frame on a screen still scrolls down (else the rest of a
+        // tall page couldn't be seen); not sideways, and a frame inside it doesn't.
         d.get_mut(a).unwrap().overflow = Overflow::None;
-        assert_eq!(scroll_range_in(&d, a, viewport(&d, a)), (0.0, 0.0));
+        assert_eq!(scroll_range_in(&d, a, viewport(&d, a)), (0.0, 1148.0));
+        d.get_mut(list).unwrap().overflow = Overflow::None;
+        assert_eq!(scroll_range(&d, list), (0.0, 0.0));
+        d.get_mut(a).unwrap().width = 800.0;
+        assert_eq!(scroll_range_in(&d, a, viewport(&d, a)), (0.0, 1148.0));
+        // Without a device the frame shows whole.
         if let Some(pg) = d.page_of(a)
             && let NodeKind::Page { prototype, .. } = &mut d.get_mut(pg).unwrap().kind
         {

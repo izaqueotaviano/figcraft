@@ -117,26 +117,12 @@ fn num(v: &Value) -> f64 {
 fn presenter_scales_by_its_options_and_pans_what_overflows() {
     let (mut u, big) = big();
     let at = pos2(720.0, 470.0);
-    // Fit: scaled down to the 1376×796 inside the padding; nothing pans.
-    let p = presenter(&u);
-    assert_eq!(p["scale"], "fit");
-    assert!((num(&p["zoom"]) - 796.0 / 3000.0).abs() < 1e-3, "{p}");
-    assert_eq!(p["panRange"], json!([0.0, 0.0]));
-    // Z: fit width (the whole 1440 width; the rest of the height pans).
-    u.key(at, Key::Z);
-    let p = presenter(&u);
-    assert_eq!(p["scale"], "fitWidth");
-    assert!((num(&p["zoom"]) - 0.72).abs() < 1e-3, "{p}");
-    assert_eq!(p["panRange"][0], 0.0);
-    assert!((num(&p["panRange"][1]) - (2160.0 - 860.0)).abs() < 1.0, "{p}");
-    // Z: fill (here the width decides too), then 100%: both ways overflow, centred across at the top.
-    u.key(at, Key::Z);
-    assert_eq!(presenter(&u)["scale"], "fill");
-    u.key(at, Key::Z);
+    // 100% by default: both ways overflow the 1440×860 area (using all of it, edge to edge),
+    // centred across, at the top.
     let p = presenter(&u);
     assert_eq!((p["scale"].as_str(), num(&p["zoom"])), (Some("actual"), 1.0));
-    assert_eq!(p["panRange"], json!([624.0, 2204.0]));
-    assert_eq!(p["pan"], json!([312.0, 0.0]));
+    assert_eq!(p["panRange"], json!([560.0, 2140.0]));
+    assert_eq!(p["pan"], json!([280.0, 0.0]));
     // The wheel pans down; a drag pans with the pointer.
     let wheel = move || {
         vec![
@@ -159,6 +145,24 @@ fn presenter_scales_by_its_options_and_pans_what_overflows() {
     }
     u.button(at - vec2(0.0, 100.0), false);
     assert!((num(&presenter(&u)["pan"][1]) - (y + 100.0)).abs() < 1.0, "{}", presenter(&u));
+    // Z: fit, scaled down to the 1376×796 inside the padding; nothing pans.
+    u.key(at, Key::Z);
+    let p = presenter(&u);
+    assert_eq!(p["scale"], "fit");
+    assert!((num(&p["zoom"]) - 796.0 / 3000.0).abs() < 1e-3, "{p}");
+    assert_eq!(p["panRange"], json!([0.0, 0.0]));
+    // Z: fit width (the whole 1440 width; the rest of the height pans).
+    u.key(at, Key::Z);
+    let p = presenter(&u);
+    assert_eq!(p["scale"], "fitWidth");
+    assert!((num(&p["zoom"]) - 0.72).abs() < 1e-3, "{p}");
+    assert_eq!(p["panRange"][0], 0.0);
+    assert!((num(&p["panRange"][1]) - (2160.0 - 860.0)).abs() < 1.0, "{p}");
+    // Z: fill (here the width decides too), then 100% again.
+    u.key(at, Key::Z);
+    assert_eq!(presenter(&u)["scale"], "fill");
+    u.key(at, Key::Z);
+    assert_eq!(presenter(&u)["scale"], "actual");
     // The command sets the options too; they carry over to the next presentation.
     u.run("proto.presentOptions", json!({"scale": "fit"}));
     assert_eq!(presenter(&u)["panRange"], json!([0.0, 0.0]));
@@ -186,9 +190,11 @@ fn devices_turn_and_their_frame_can_hide() {
     assert_eq!(p["viewport"], json!([393.0, 393.0]));
     assert_eq!(p["scrollRange"], json!([0.0, 1607.0]));
     u.run("proto.closePreview", json!({}));
-    // Full window, upright: hiding the device's body leaves more room for the screen.
+    // Full window, upright, fitting the window: hiding the device's body leaves more room for the
+    // screen.
     u.run("proto.settings", json!({"rotation": "portrait"}));
     u.run("proto.present", json!({"start": a}));
+    u.run("proto.presentOptions", json!({"scale": "fit"}));
     let with_body = num(&presenter(&u)["zoom"]);
     u.run("proto.presentOptions", json!({"deviceFrame": false}));
     let bare = num(&presenter(&u)["zoom"]);
@@ -266,13 +272,17 @@ fn the_wheel_coasts_after_it_stops() {
         ]
     };
     u.frames(8, wheel);
-    let mut coasted = false;
-    for _ in 0..60 {
-        u.frame(vec![Event::PointerMoved(c)]);
-        coasted |= u.preview()["flinging"] == json!(true);
+    // No more input (not even the pointer moving), frames drawn only when asked for: the coast
+    // plays at once, not when the mouse next moves, and the window goes idle only at rest.
+    let (mut coasted, mut idled, mut last) = (false, false, u.scroll_y());
+    for k in 0..260 {
+        idled |= u.next_frame();
+        let (y, flinging) = (u.scroll_y(), u.preview()["flinging"] == json!(true));
+        assert!(!idled || (y == last && !flinging), "frame {k}: still scrolling at {y} after the window went idle");
+        coasted |= flinging;
+        last = y;
     }
     assert!(coasted, "the wheel's motion carried on");
-    u.frames(200, Vec::new);
     assert_eq!(u.preview()["flinging"], json!(false), "and came to rest");
 }
 

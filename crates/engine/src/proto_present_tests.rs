@@ -63,7 +63,15 @@ fn present_options_ask_the_ui_and_check_their_values() {
     }
     assert!(s.execute("proto.presentOptions", &json!({"scale": "huge"})).is_err());
     assert!(s.execute("proto.presentOptions", &json!({"deviceFrame": "yes"})).is_err());
+    assert!(s.execute("proto.presentOptions", &json!({"responsive": 1})).is_err());
     assert!(s.execute("proto.presentOptions", &json!({})).is_err(), "nothing to set");
+    // Responsive is a viewing option here too: the file's setting doesn't change.
+    s.execute("proto.presentOptions", &json!({"responsive": true})).unwrap();
+    let r = s.ui_requests.last().unwrap();
+    assert_eq!((r.kind.as_str(), &r.data), ("present.options", &json!({"responsive": true})));
+    let page = s.page().unwrap();
+    let NodeKind::Page { prototype, .. } = &s.doc().unwrap().node(page).unwrap().kind else { panic!("not a page") };
+    assert!(!prototype.responsive);
     // It's a viewing option: the document doesn't change.
     assert!(!s.ds().unwrap().is_dirty());
 }

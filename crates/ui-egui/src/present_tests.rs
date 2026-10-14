@@ -13,21 +13,46 @@ pub(crate) struct Ui {
     pub(crate) ctx: egui::Context,
     pub(crate) app: FigApp,
     pub(crate) time: f64,
+    /// The window's size (1440×900 unless a test resizes it).
+    pub(crate) size: egui::Vec2,
+    /// How soon the last frame asked to be drawn again (`None`: it didn't; an idle window then
+    /// draws nothing until the next input).
+    pub(crate) repaint: Option<std::time::Duration>,
 }
 
 impl Ui {
     pub(crate) fn new(s: Session) -> Self {
-        let mut u = Self { ctx: egui::Context::default(), app: FigApp::new(s, Box::new(NoServices)), time: 0.0 };
+        let mut u =
+            Self { ctx: egui::Context::default(), app: FigApp::new(s, Box::new(NoServices)), time: 0.0, size: vec2(1440.0, 900.0), repaint: None };
         u.frames(3, Vec::new);
         u
     }
 
     pub(crate) fn frame(&mut self, events: Vec<Event>) {
         self.time += 1.0 / 60.0;
-        let input =
-            RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1440.0, 900.0))), time: Some(self.time), events, ..Default::default() };
+        let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.size)), time: Some(self.time), events, ..Default::default() };
         let app = &mut self.app;
-        self.ctx.run_ui(input, |ui| app.ui(ui)).textures_delta.clear();
+        let mut out = self.ctx.run_ui(input, |ui| app.ui(ui));
+        out.textures_delta.clear();
+        self.repaint =
+            out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.repaint_delay).filter(|d| *d < std::time::Duration::from_secs(3600));
+    }
+
+    /// The last frame asked for the next one at once (an animation or motion goes on).
+    pub(crate) fn repaints(&self) -> bool {
+        self.repaint.is_some_and(|d| d < std::time::Duration::from_millis(20))
+    }
+
+    /// The next frame without input, when a real window would draw it: at once if the last frame
+    /// asked for that, else after the delay it asked for, or a second later when it asked for
+    /// none (an idle window sleeps until the next input). True when the window went idle.
+    pub(crate) fn next_frame(&mut self) -> bool {
+        let idle = !self.repaints();
+        if idle {
+            self.time += self.repaint.map_or(1.0, |d| d.as_secs_f64().min(1.0));
+        }
+        self.frame(Vec::new());
+        idle
     }
 
     pub(crate) fn frames(&mut self, n: usize, events: impl Fn() -> Vec<Event>) {
