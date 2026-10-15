@@ -44,6 +44,11 @@ use crate::icons::{self, Icon};
 use crate::theme::{ACCENT, Tokens, regular, semibold};
 use crate::widgets;
 
+// The presenter's own controls (shortcut table and list, stepping through screens, ...), in files
+// of their own; they work on the player's private state.
+#[path = "present_chrome.rs"]
+pub(crate) mod ux;
+
 /// A mouse trigger waiting out its delay: interaction `k` of `node`, hit at `rect` while `root`
 /// (the screen or the top overlay) showed; due at `due` on the player's clock.
 #[derive(Clone, Copy, Debug)]
@@ -372,6 +377,8 @@ pub struct Presenter {
     pads_held: u32,
     /// Clicks on widgets' clickable parts (widget, target), for [`Presenter::click_widgets`].
     widget_clicks: Vec<(NodeId, String)>,
+    /// The controls' own state: the shortcut list, ... ([`ux`]).
+    pub(crate) ux: ux::Ux,
 }
 
 impl Presenter {
@@ -435,6 +442,7 @@ impl Presenter {
             uses_pads: false,
             pads_held: 0,
             widget_clicks: Vec::new(),
+            ux: ux::Ux::default(),
         }
     }
 
@@ -711,6 +719,7 @@ impl Presenter {
             "screenRect": self.screen.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
             "flinging": !self.fling.is_empty(),
             "gamepad": self.uses_pads,
+            "shortcuts": self.ux.help,
         })
     }
 
@@ -1884,6 +1893,8 @@ enum BarAction {
     Comments,
     /// Show or hide the Inspect panel.
     Inspect,
+    /// Show or hide the shortcut list.
+    Help,
 }
 
 /// The full-window presenter (while `app.ui.present` is set). Escape or Close ends it.
@@ -1896,10 +1907,15 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     }
     poll_pads(app, &mut pres, &ctx);
     let mut action = None;
-    // Typing a reply to a comment keeps the keys from the prototype; Shift+C shows the comments.
+    // A menu that is open takes Escape (the key then doesn't end the presentation too).
+    let menu_open = egui::Popup::is_any_open(&ctx);
+    // Typing a reply to a comment keeps the keys from the prototype; Shift+C shows the comments
+    // (the presenter's keys that win over the prototype's: `ux::SHORTCUTS`).
     let typing = ctx.egui_wants_keyboard_input();
-    if !typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::C)) {
-        action = Some(BarAction::Comments);
+    if !typing {
+        for act in ux::priority_acts(&ctx) {
+            ux::run(&mut pres, act, &ctx, now, false);
+        }
     }
     if pres.view.inspect {
         let t = Tokens::get(&ctx);
@@ -1912,21 +1928,13 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
         action = player(&mut pres, ui, ui.max_rect(), now, Chrome { keys: !typing, ..FULL }).or(action);
     });
-    // Keys the prototype left alone: C shows the comments, F fills the screen.
-    if !typing {
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::C)) {
-            action = Some(BarAction::Comments);
-        }
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F)) {
-            let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
-        }
-    }
     match action {
         Some(BarAction::Comments) => pres.view.comments = !pres.view.comments,
         Some(BarAction::Inspect) => pres.view.inspect = !pres.view.inspect,
+        Some(BarAction::Help) => pres.ux.help = !pres.ux.help,
         _ => {}
     }
+    ux::help_window(&ctx, &mut pres);
     if pres.view.comments
         && let Some((frame, place, clip)) = pres.shown
     {
@@ -1937,7 +1945,10 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     finish(app, &mut pres);
     // The options carry over to the next presentation (Responsive starts from the file's setting).
     app.ui.present_view = pres.view;
-    if action == Some(BarAction::Close) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // Escape ends the presentation unless something took it first: a comment thread, a menu, the
+    // shortcut list ([`ux::escape`]).
+    let escape = !menu_open && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    if action == Some(BarAction::Close) || (escape && ux::escape(&mut pres)) {
         return;
     }
     app.ui.present = Some(pres);
@@ -2345,11 +2356,13 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
             (BarAction::Options, tr_noop("Options"), Icon::Dots),
             (BarAction::Comments, tr_noop("Comments"), Icon::Comment),
             (BarAction::Inspect, tr_noop("Inspect"), Icon::Code),
+            (BarAction::Help, tr_noop("Keyboard shortcuts"), Icon::Help),
         ]
     };
     let mut x = bar.max.x - if chrome.pane { 6.0 } else { 8.0 };
     for (act, label, icon) in buttons {
-        let shown = tr(label);
+        // (The shortcut list's button reads "?", as the key.)
+        let shown = if *act == BarAction::Help { ux::spec(ux::Act::Help) } else { tr(label) };
         let w = if chrome.pane { 24.0 } else { ui.painter().layout_no_wrap(shown.to_string(), regular(11.5), text).size().x + 16.0 };
         let br = Rect::from_min_size(pos2(x - w, bar.center().y - 12.0), vec2(w, 24.0));
         x = br.min.x - if chrome.pane { 2.0 } else { 4.0 };
@@ -2357,7 +2370,9 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         if chrome.pane {
             resp = resp.tip(shown);
         }
-        let on = (*act == BarAction::Comments && p.view.comments) || (*act == BarAction::Inspect && p.view.inspect);
+        let on = (*act == BarAction::Comments && p.view.comments)
+            || (*act == BarAction::Inspect && p.view.inspect)
+            || (*act == BarAction::Help && p.ux.help);
         if on {
             ui.painter().rect_filled(br, CornerRadius::same(5), ACCENT);
         } else if resp.hovered() {
@@ -2368,6 +2383,9 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         }
         if *act == BarAction::Inspect {
             resp = resp.tip(tr("Inspect the layer under the pointer: size, colours, typography"));
+        }
+        if *act == BarAction::Help {
+            resp = resp.tip(format!("{} ({})", tr("Keyboard shortcuts"), ux::spec(ux::Act::Help)));
         }
         if chrome.pane {
             icons::paint(ui.painter(), br.shrink(5.0), *icon, t.icon);
@@ -2441,7 +2459,7 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, now: f64
             ui.close();
         }
     }
-    if (on_device || !responsive) && menu_check(ui, false, tr("Next size option"), "Z") {
+    if (on_device || !responsive) && menu_check(ui, false, tr("Next size option"), ux::spec(ux::Act::NextSize)) {
         p.set_scale(p.view.scale.next(on_device));
         ui.close();
     }
@@ -2464,7 +2482,11 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, now: f64
         p.view.hotspot_hints = !p.view.hotspot_hints;
         ui.close();
     }
-    if menu_check(ui, false, tr("Restart"), "R") {
+    if menu_check(ui, false, tr("Keyboard shortcuts"), ux::spec(ux::Act::Help)) {
+        p.ux.help = true;
+        ui.close();
+    }
+    if menu_check(ui, false, tr("Restart"), ux::spec(ux::Act::Restart)) {
         p.restart(p.start, now);
         ui.close();
     }
@@ -2848,47 +2870,17 @@ fn input(p: &mut Presenter, ctx: &egui::Context, l: &Layout, over_area: bool, ke
             }
             continue;
         }
-        // The player's own keys, when the prototype doesn't use them: R restarts, Z cycles the
-        // full-window presenter's size options.
-        if mods.is_none() {
-            match key {
-                egui::Key::R => {
-                    p.restart(p.start, now);
-                    consume_key(ctx, *key);
-                    return;
-                }
-                // (A responsive frame filling the window has no size options.)
-                egui::Key::Z if !pane && (l.device.is_some() || p.fit.is_none()) => {
-                    p.set_scale(p.view.scale.next(l.device.is_some()));
-                    consume_key(ctx, *key);
-                    return;
-                }
-                _ => {}
-            }
-        }
-        // The arrows (and Space or N forward) step through top-level frames when nothing else
-        // uses them.
-        let forward = match key {
-            egui::Key::ArrowRight => Some(true),
-            egui::Key::Space | egui::Key::N if mods.is_none() => Some(true),
-            egui::Key::ArrowLeft => Some(false),
-            _ => None,
-        };
-        if let Some(forward) = forward
-            && p.overlays.is_empty()
-            && let Some(base) = p.doc.as_ref()
+        // The player's own keys, when the prototype doesn't use them (R restarts, Z cycles the
+        // full-window presenter's size options, the arrows and Space or N step through the
+        // screens, C comments, F full screen, ...): the table in `ux::SHORTCUTS`.
+        if let Some(act) = ux::act_for(*key, *mods, pane)
+            && ux::run(p, act, ctx, now, pane)
         {
-            let frames = base.top_frames(base.page_of(p.current).unwrap_or(p.current));
-            if let Some(i) = frames.iter().position(|f| *f == p.current) {
-                let next = if forward { frames.get(i + 1) } else { i.checked_sub(1).and_then(|j| frames.get(j)) };
-                if let Some(n) = next.copied() {
-                    p.go(n, Transition::Instant, 0.0, Easing::Linear, now, true, false);
-                    consume_key(ctx, *key);
-                    return;
-                }
-            }
+            consume_key(ctx, *key);
+            return;
         }
     }
+
     // After delay (timers start when the frame appears; not while animating).
     if p.anim.is_none()
         && let Some(((id, k), due)) = next_delay(p, doc, root, now)
@@ -3063,6 +3055,10 @@ mod delay_tests;
 #[cfg(test)]
 #[path = "present_page_tests.rs"]
 mod page_tests;
+
+#[cfg(test)]
+#[path = "present_chrome_tests.rs"]
+mod ux_tests;
 
 #[cfg(test)]
 mod tests {

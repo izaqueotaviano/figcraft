@@ -1,6 +1,6 @@
 # Prototyping parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (core editor leftovers: delays on mouse triggers and manual overlay offsets; controller buttons on key/gamepad triggers, widgets that react in prototypes, `proto.evaluate` and the mode lookup rules pinned) · **Target:** Figma Design (desktop app 126.10.7)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (presenter controls: one shortcut table with a `?` list; core editor leftovers before it: delays on mouse triggers and manual overlay offsets; controller buttons on key/gamepad triggers, widgets that react in prototypes, `proto.evaluate` and the mode lookup rules pinned) · **Target:** Figma Design (desktop app 126.10.7)
 
 **Breadth ~92%, ready ~74% (estimated).** Every Figma trigger except media, every action except
 media control, every transition and easing exist; key/gamepad triggers take controller buttons,
@@ -71,6 +71,20 @@ case pins the current behaviour).
 | Fixed layers draw and take clicks above the content scrolling under them, wherever they are in the layer list | **fixed** | they drew in layer order, under later layers; the file's order doesn't change; `fixed_layers_stay_above_the_content_that_scrolls` |
 | Flows and starting points; device frames; presentation options; hotspot hints | pass | `proto_present_tests`, `present_view_tests`, `present_tests` |
 
+## Presenter controls
+
+Viewing aids of the full-window presenter and the preview pane: none of them is saved in the file.
+The code is in `crates/ui-egui/src/present_chrome.rs` (the module `present::ux`; the side panel and the
+separate window have files of their own), the tests in `present_chrome_tests.rs`. Options that are
+the viewer's (`PresentView`) are kept between presentations, shown by `ui.inspect` (`presentOptions`,
+and `presenter` while presenting) and set through `ui.set`.
+
+| Control | Behaviour | Notes |
+|---|---|---|
+| Shortcut list | The `?` button in the bar, the `?` key and Options ▸ Keyboard shortcuts open a window listing every key of the presenter under its section, each key as a keycap; the keys still work while it shows; Escape (once), `?` or its close button close it | **one table** (`SHORTCUTS`) holds the acts and their keys: the key handling (`act_for`), the hints in the Options menu (`spec`) and the list (`help_window`) all read it, so they can't disagree. `every_listed_key_does_what_the_list_says` presses every listed key and checks its effect (a `match` without a catch-all on the act: a new act needs a case), and the list's test checks that every row and key is on screen. A key the prototype uses itself (a key trigger) goes to the prototype first, as before; only Shift+C wins over it |
+| Keys | Right arrow, Space, N: next screen; left arrow: previous screen; R: restart; Z: next size option; F: full screen; C or Shift+C: comments; `?`: this list; Escape: close | the preview pane (while the pointer is over it) takes only next, previous and restart. Shift+/ counts as `?` on a US keyboard |
+| Escape | Closes, in this order, the open comment thread, the open menu, the shortcut list, then the presentation | a menu that is open used to close the presentation as well |
+
 ## Features
 
 | Feature | Status | Notes |
@@ -88,6 +102,7 @@ case pins the current behaviour).
 | Drag-driven animations that follow the pointer, in their direction | done | |
 | Presenter: device frames and colours, rotation, custom sizes, fit/fill/100%, responsive frames | done | device bodies drawn in code |
 | Hotspot hints, inspect panel in the presenter, comments in the presenter | done | |
+| Shortcut list in the presenter (`?`), built from the table the keys use | done | [Presenter controls](#presenter-controls) |
 | Preview pane following edits live | done | |
 | Edit interactions on several layers at once | done | |
 | Opening a link in place | missing | |
@@ -100,6 +115,7 @@ case pins the current behaviour).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | Presenter controls (UI): the presenter's keys in one table with a `?` shortcut list (bar button, key and Options entry) that is built from it; Escape closes an open menu or the list before the presentation. Numbers unchanged. |
 | 2026-10-13 | minor | Prototyping, delays on mouse triggers and manual overlay offsets (M5): mouse enter, leave, down and up wait `delayMs` before their actions run (once while waiting; dropped when the screen or overlay they were on goes away; a pointer that leaves early doesn't cancel, the documentation is silent), and a manual overlay sits at `offset: [x, y]` from the top-left of the layer that opens it (without one, right below it, as before). Delay and X/Y fields in the interaction editor, the player on its own clock, REST import (`delay`, `overlayRelativePosition`), `.fig` import and export (the export's field for mouse delays is unchecked against other software). Numbers unchanged. |
 | 2026-10-12 | minor | Controller buttons on key/gamepad triggers (Controller menu, player polling on Windows and in the browser, REST import instead of skipping, control channel injection), widgets reacting to clicks in presented prototypes on the prototype's own copy, `proto.evaluate`; the mode lookup and set-variable-mode rules written as cases (they already held). Breadth 90% → 92%, ready unchanged at 74% (controllers on Windows and the browser only; no real prototype QA yet), 3–6 h → 2–5 h |
 | 2026-10-11 | minor | Behaviour suite from the public documentation (7 model tests, 12 player tests with 21 gestures) and its fixes: on drag follows its animation's direction and the pointer, key combinations, overlay timers from when they open, interactive components play their variant's interactions and change the right instance, physical springs that play until they settle, smart animate overshoots with the easing, fixed layers above scrolling content; added scroll to offsets. Breadth 88% → 90%, ready 70% → 74%, 5–9 h → 3–6 h |
