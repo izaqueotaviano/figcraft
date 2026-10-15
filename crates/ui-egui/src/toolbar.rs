@@ -11,14 +11,14 @@ use crate::i18n::{tr, tr_noop, trf};
 use crate::icons::{self, Icon};
 use crate::theme::{ACCENT, Tokens, regular};
 
-struct Group {
-    key: &'static str,
+pub(crate) struct Group {
+    pub(crate) key: &'static str,
     /// The flyout button's name for screen readers.
-    name: &'static str,
-    tools: &'static [(ToolId, Icon)],
+    pub(crate) name: &'static str,
+    pub(crate) tools: &'static [(ToolId, Icon)],
 }
 
-const GROUPS: &[Group] = &[
+pub(crate) const GROUPS: &[Group] = &[
     Group {
         key: "move",
         name: tr_noop("Move tools"),

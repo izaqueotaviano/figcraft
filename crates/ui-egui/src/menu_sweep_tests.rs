@@ -270,3 +270,103 @@ fn items_that_need_a_value_ask_for_it() {
     h.frame();
     assert!(h.ctx.memory(|m| m.has_focus(egui::Id::new("filename").with("te"))));
 }
+
+/// Where the AccessKit tree puts the control `label` of `role` (its middle), if it's there.
+fn control_at(u: &mut crate::layers_drag_tests::Ui, role: egui::accesskit::Role, label: &str) -> Option<Pos2> {
+    u.ctx.enable_accesskit();
+    u.frame(vec![]);
+    let out = u.frame_output(vec![]);
+    let nodes = out.platform_output.accesskit_update?.nodes;
+    let n = nodes.iter().map(|(_, n)| n).find(|n| n.role() == role && n.label() == Some(label))?;
+    let b = n.bounds()?;
+    Some(Pos2::new(((b.x0 + b.x1) / 2.0) as f32, ((b.y0 + b.y1) / 2.0) as f32))
+}
+
+fn click(u: &mut crate::layers_drag_tests::Ui, p: Pos2) {
+    u.button(p, true);
+    u.button(p, false);
+    u.frame(vec![]);
+}
+
+#[test]
+fn every_toolbar_tool_is_picked_by_a_click_on_it_or_in_its_flyout() {
+    use egui::accesskit::Role;
+    let mut s = Session::new();
+    s.execute("shape.rectangle", &json!({"x": 10, "y": 10, "width": 100, "height": 50})).unwrap();
+    let mut u = crate::layers_drag_tests::Ui::new(s);
+    u.app.ui.home = false;
+    let mut from_flyouts = 0;
+    for g in crate::toolbar::GROUPS {
+        for (tool, _) in g.tools {
+            u.app.run("tool.set", json!({"tool": "move"}));
+            let label = crate::i18n::tr(tool.label()).to_string();
+            // The group's button shows the tool last picked from it; the others are in its flyout.
+            match control_at(&mut u, Role::Button, &label) {
+                Some(p) => click(&mut u, p),
+                None => {
+                    let chevron = control_at(&mut u, Role::Button, crate::i18n::tr(g.name)).unwrap_or_else(|| panic!("no flyout button {}", g.name));
+                    click(&mut u, chevron);
+                    assert_eq!(u.app.ui.tool_flyout, Some(g.key), "the {} flyout opens and stays open", g.name);
+                    let item = control_at(&mut u, Role::MenuItemCheckBox, &label).unwrap_or_else(|| panic!("no {label} in the {} flyout", g.name));
+                    click(&mut u, item);
+                    assert_eq!(u.app.ui.tool_flyout, None, "picking from the flyout closes it");
+                    from_flyouts += 1;
+                }
+            }
+            assert_eq!(u.app.session.tool.tool, *tool, "a click on {label} picks it");
+        }
+    }
+    // Each group shows one tool at a time: the rest were picked from flyouts.
+    let tools: usize = crate::toolbar::GROUPS.iter().map(|g| g.tools.len()).sum();
+    assert!(from_flyouts >= tools - crate::toolbar::GROUPS.len(), "{from_flyouts} of {tools} tools came from flyouts");
+}
+
+/// A press and its release in the same frame: a touchpad tap, or any click while frames are slow.
+fn tap(u: &mut crate::layers_drag_tests::Ui, p: Pos2, button: egui::PointerButton) {
+    u.frame(vec![
+        egui::Event::PointerMoved(p),
+        egui::Event::PointerButton { pos: p, button, pressed: true, modifiers: Default::default() },
+        egui::Event::PointerButton { pos: p, button, pressed: false, modifiers: Default::default() },
+    ]);
+    u.frame(vec![]);
+}
+
+#[test]
+fn menus_opened_by_a_tap_stay_open() {
+    use egui::accesskit::Role;
+    let mut s = Session::new();
+    s.execute("shape.rectangle", &json!({"x": 10, "y": 10, "width": 100, "height": 50})).unwrap();
+    let mut u = crate::layers_drag_tests::Ui::new(s);
+    u.app.ui.home = false;
+    // The main menu, from the logo.
+    let logo = control_at(&mut u, Role::Button, crate::i18n::tr("Main menu")).expect("the main menu button");
+    tap(&mut u, logo, egui::PointerButton::Primary);
+    assert!(u.app.ui.main_menu, "a tap on the logo opens the main menu and it stays open");
+    // A tap elsewhere closes it.
+    let away = u.app.canvas.rect.center();
+    tap(&mut u, away, egui::PointerButton::Primary);
+    assert!(!u.app.ui.main_menu);
+    // The canvas context menu, from a two-finger tap (secondary).
+    tap(&mut u, away, egui::PointerButton::Secondary);
+    assert!(u.app.ui.context_menu.is_some(), "a secondary tap opens the context menu and it stays open");
+    tap(&mut u, away + egui::vec2(-300.0, -200.0), egui::PointerButton::Primary);
+    assert!(u.app.ui.context_menu.is_none());
+}
+
+#[test]
+fn a_popup_is_just_opened_on_its_first_frame_only() {
+    let ctx = egui::Context::default();
+    let id = egui::Id::new("a popup");
+    let mut seen = vec![];
+    // Shown on frames 0–2, closed on frame 3, open again from frame 4.
+    for frame in 0..6 {
+        ctx.run_ui(RawInput::default(), |ui| {
+            if frame != 3 {
+                seen.push(crate::menus::just_opened(ui.ctx(), id));
+            }
+        })
+        .textures_delta
+        .clear();
+    }
+    assert_eq!(seen, vec![true, false, false, true, false]);
+}

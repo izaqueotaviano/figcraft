@@ -547,6 +547,22 @@ pub fn main_menu_id() -> Id {
     Id::new("main_menu")
 }
 
+/// Whether popup `id` is showing for the first frame; call it on every frame the popup shows. A
+/// press then mustn't count as a press outside that closes it: a touchpad tap, or any click while
+/// frames are slow, brings the press that opened the popup in the same frame as the release that
+/// did.
+pub(crate) fn just_opened(ctx: &egui::Context, id: Id) -> bool {
+    let frame = ctx.cumulative_frame_nr();
+    ctx.data_mut(|d| {
+        let key = id.with("popup_shown");
+        // (first frame shown, last frame shown): not shown the frame before means opened now.
+        let (since, last) = d.get_temp::<(u64, u64)>(key).unwrap_or((frame, frame));
+        let since = if last.saturating_add(1) < frame || since > frame { frame } else { since };
+        d.insert_temp(key, (since, frame));
+        since == frame
+    })
+}
+
 /// Whether the pointer is over a menu (any foreground area).
 fn over_menu(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.pointer.interact_pos()).and_then(|p| ctx.layer_id_at(p)).is_some_and(|l| l.order == egui::Order::Foreground)
@@ -610,7 +626,9 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 }
             });
         });
-        let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !over_menu(ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let fresh = just_opened(ctx, main_menu_id());
+        let pressed = ctx.input(|i| i.pointer.any_pressed()) && !fresh;
+        let clicked_outside = pressed && !over_menu(ctx) || ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if close || (clicked_outside && !area.response.hovered()) {
             app.ui.main_menu = false;
         }
@@ -719,7 +737,9 @@ pub fn popups(app: &mut FigApp, ctx: &egui::Context) {
                 }
             });
         });
-        let clicked_outside = ctx.input(|i| i.pointer.any_pressed()) && !area.response.hovered() && !over_menu(ctx);
+        let fresh = just_opened(ctx, Id::new("ctx_menu"));
+        let pressed = ctx.input(|i| i.pointer.any_pressed()) && !fresh;
+        let clicked_outside = pressed && !area.response.hovered() && !over_menu(ctx);
         if close || clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             app.ui.context_menu = None;
             ctx.data_mut(|d| d.remove::<bool>(select_layer_id()));
