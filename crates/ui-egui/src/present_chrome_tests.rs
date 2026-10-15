@@ -232,6 +232,15 @@ fn every_listed_key_does_what_the_list_says() {
                     key(&mut u);
                     assert_eq!(presenter(&u)["shortcuts"], json!(false), "{what}: again closes the list");
                 }
+                Act::HideUi => {
+                    assert_eq!(presenter(&u)["hideUi"], json!(false));
+                    key(&mut u);
+                    assert_eq!(presenter(&u)["hideUi"], json!(true), "{what}");
+                    assert!(presenter(&u)["controls"]["close"].is_null(), "{what}: the bar is gone");
+                    key(&mut u);
+                    assert_eq!(presenter(&u)["hideUi"], json!(false), "{what}: again brings it back");
+                    assert!(!presenter(&u)["controls"]["close"].is_null(), "{what}: with its buttons");
+                }
                 Act::Close => {
                     key(&mut u);
                     assert!(u.app.ui.present.is_none(), "{what}");
@@ -510,4 +519,186 @@ fn a_long_name_gives_way_to_the_counter_and_the_pane_has_one_too() {
     u.frames(3, Vec::new);
     let pane = u.preview();
     assert!(!pane["controls"]["position"].is_null() && pane["controls"]["next"].is_null(), "{}", pane["controls"]);
+}
+
+fn screen_rect(u: &Ui) -> [f64; 4] {
+    let r = presenter(u)["screenRect"].clone();
+    [0, 1, 2, 3].map(|i| r[i].as_f64().unwrap_or(f64::NAN))
+}
+
+fn cmd_backslash(u: &mut Ui) -> egui::FullOutput {
+    press(u, Key::Backslash, held(With::Cmd))
+}
+
+fn move_to(u: &mut Ui, at: Pos2) {
+    frame_out(u, vec![Event::PointerMoved(at)]);
+}
+
+/// Frames until the bar has slid all the way (or away).
+fn settle_bar(u: &mut Ui) {
+    u.frames(20, Vec::new);
+}
+
+fn bar_texts_shown(out: &egui::FullOutput) -> bool {
+    ["Restart", "Close", "Options"].iter().any(|l| has_text(out, &t(l)))
+}
+
+#[test]
+fn hiding_the_ui_leaves_only_the_prototype_centred_in_the_whole_window() {
+    let (mut u, [a, ..]) = abc();
+    u.run("proto.presentOptions", json!({"inspect": true}));
+    u.frames(2, Vec::new);
+    assert!(bar_texts_shown(&frame_out(&mut u, vec![])), "the bar shows");
+    // The Inspect panel (280 wide) and the 40 high bar take room: the prototype is centred in the rest.
+    assert_eq!(screen_rect(&u), [430.0, 270.0, 730.0, 670.0]);
+    cmd_backslash(&mut u);
+    let out = frame_out(&mut u, vec![]);
+    assert_eq!(presenter(&u)["hideUi"], json!(true));
+    assert!(!bar_texts_shown(&out), "{:?}", texts(&out));
+    assert!(presenter(&u)["controls"].as_object().is_some_and(|c| c.is_empty()), "no controls: {}", presenter(&u)["controls"]);
+    assert_eq!(screen_rect(&u), [570.0, 250.0, 870.0, 650.0], "centred in the whole window, panel and bar gone");
+    // It follows the window: a different size, still centred and fitted.
+    u.size = vec2(1000.0, 700.0);
+    u.frames(2, Vec::new);
+    assert_eq!(screen_rect(&u), [350.0, 150.0, 650.0, 550.0]);
+    u.run("proto.presentOptions", json!({"scale": "fit"}));
+    u.size = vec2(1440.0, 900.0);
+    u.frames(2, Vec::new);
+    let r = screen_rect(&u);
+    assert_eq!((r[0] + r[2]) / 2.0, 720.0);
+    assert_eq!((r[1] + r[3]) / 2.0, 450.0);
+    // A viewing option, kept for the next presentation (which starts hidden).
+    assert!(u.app.ui.present_view.hide_ui);
+    assert_eq!(u.app.inspect()["presentOptions"]["hideUi"], json!(true));
+    u.run("proto.present", json!({"start": a}));
+    assert_eq!(presenter(&u)["hideUi"], json!(true));
+    // Cmd+\ again brings it back, with the panel.
+    cmd_backslash(&mut u);
+    assert!(bar_texts_shown(&frame_out(&mut u, vec![])));
+    assert!(!u.app.ui.present_view.hide_ui);
+}
+
+#[test]
+fn the_options_menu_hides_the_ui_and_the_hint_is_the_tables() {
+    let (mut u, _) = abc();
+    let out = frame_out(&mut u, vec![]);
+    click(&mut u, text_at(&out, &t("Options")));
+    let menu = frame_out(&mut u, vec![]);
+    assert!(has_text(&menu, &crate::toolbar::pretty_shortcut(ux::spec(Act::HideUi))), "{:?}", texts(&menu));
+    click(&mut u, text_at(&menu, &t("Hide UI")));
+    assert_eq!(presenter(&u)["hideUi"], json!(true));
+    assert!(!bar_texts_shown(&frame_out(&mut u, vec![])));
+}
+
+#[test]
+fn the_bar_slides_in_at_the_top_edge_and_out_again() {
+    let (mut u, _) = abc();
+    cmd_backslash(&mut u);
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(0.0));
+    // A few points from the top edge: it slides in (not at once), to its full height.
+    move_to(&mut u, pos2(700.0, 2.0));
+    let first = presenter(&u)["barReveal"].as_f64().unwrap_or(0.0);
+    assert!(first > 0.0 && first < 1.0, "sliding: {first}");
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(1.0));
+    let out = frame_out(&mut u, vec![]);
+    assert!(bar_texts_shown(&out));
+    let close = &presenter(&u)["controls"]["close"];
+    assert_eq!((close[1].as_f64(), close[3].as_f64()), (Some(8.0), Some(32.0)), "the bar is at the top: {close}");
+    // It stays while the pointer is on it, goes when it leaves.
+    move_to(&mut u, pos2(700.0, 30.0));
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(1.0));
+    move_to(&mut u, pos2(700.0, 300.0));
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(0.0));
+    assert!(!bar_texts_shown(&frame_out(&mut u, vec![])));
+    // The pointer a little below the edge doesn't ask for it.
+    move_to(&mut u, pos2(700.0, 12.0));
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(0.0));
+}
+
+#[test]
+fn the_bar_that_slid_in_works_and_the_prototype_under_it_does_not_see_the_click() {
+    // A 1440×900 screen with a link in its top right corner, right under the Restart button.
+    let mut s = Session::new();
+    let a = id(&ex(&mut s, "frame.create", json!({"x": 0, "y": 0, "width": 1440, "height": 900, "name": "A"})));
+    let c = frame(&mut s, "C", 2000.0);
+    let link = id(&ex(&mut s, "shape.rectangle", json!({"parent": a, "x": 1300, "y": 0, "width": 140, "height": 40, "props": {"name": "Link"}})));
+    ex(
+        &mut s,
+        "proto.interaction.add",
+        json!({"id": link, "trigger": {"type": "onClick"}, "action": {"type": "navigate", "dest": c}, "transition": {"type": "instant"}}),
+    );
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": a}));
+    cmd_backslash(&mut u);
+    settle_bar(&mut u);
+    move_to(&mut u, pos2(700.0, 1.0));
+    settle_bar(&mut u);
+    // Restart is where the link is. The click is the bar's.
+    click_control(&mut u, "restart");
+    assert_eq!(presenter(&u)["current"], json!(a), "the link under the button didn't fire");
+    // The Options menu opens from it and keeps the bar while the pointer is in the menu.
+    click_control(&mut u, "options");
+    u.frames(2, Vec::new);
+    move_to(&mut u, pos2(1300.0, 120.0));
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(1.0), "the open menu keeps the bar");
+    // Escape closes the menu only; the next one shows the UI again; the third ends the presentation.
+    press(&mut u, Key::Escape, Modifiers::NONE);
+    settle_bar(&mut u);
+    assert!(u.app.ui.present.is_some() && presenter(&u)["hideUi"] == json!(true));
+    press(&mut u, Key::Escape, Modifiers::NONE);
+    assert!(u.app.ui.present.is_some(), "Escape once shows the UI, it doesn't close");
+    assert_eq!(presenter(&u)["hideUi"], json!(false));
+    assert!(bar_texts_shown(&frame_out(&mut u, vec![])));
+    press(&mut u, Key::Escape, Modifiers::NONE);
+    assert!(u.app.ui.present.is_none());
+}
+
+#[test]
+fn a_drag_from_the_prototype_does_not_pull_the_bar_in_and_a_hidden_bar_costs_no_frames() {
+    let (mut u, _) = abc();
+    cmd_backslash(&mut u);
+    settle_bar(&mut u);
+    // Press in the prototype, drag past the top edge: the bar stays away until the button is up.
+    let b = |at: Pos2, pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+    frame_out(&mut u, vec![Event::PointerMoved(pos2(720.0, 400.0)), b(pos2(720.0, 400.0), true)]);
+    for y in [300.0, 100.0, 20.0, 2.0] {
+        frame_out(&mut u, vec![Event::PointerMoved(pos2(720.0, y))]);
+    }
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(0.0), "dragging past the edge");
+    frame_out(&mut u, vec![b(pos2(720.0, 2.0), false)]);
+    settle_bar(&mut u);
+    assert_eq!(presenter(&u)["barReveal"].as_f64(), Some(1.0), "released at the edge: now it asks for the bar");
+    // Hidden and away, nothing asks for another frame.
+    move_to(&mut u, pos2(720.0, 400.0));
+    settle_bar(&mut u);
+    assert!(!u.repaints(), "an idle hidden presenter draws no frames: {:?}", u.repaint);
+}
+
+#[test]
+fn hide_ui_is_reachable_from_the_control_channel() {
+    let (mut u, _) = abc();
+    let set = |u: &mut Ui, v: Value| crate::control::handle(&mut u.app, &u.ctx, "ui.set", &json!({"presentHideUi": v}));
+    set(&mut u, json!(true)).unwrap();
+    u.frames(2, Vec::new);
+    assert_eq!(presenter(&u)["hideUi"], json!(true));
+    assert_eq!(u.app.inspect()["presentOptions"]["hideUi"], json!(true));
+    assert!(!bar_texts_shown(&frame_out(&mut u, vec![])));
+    assert!(set(&mut u, json!("yes")).is_err(), "only true or false");
+    set(&mut u, json!(false)).unwrap();
+    u.frames(2, Vec::new);
+    assert!(bar_texts_shown(&frame_out(&mut u, vec![])));
+    // Between presentations it sets what the next one starts with.
+    u.app.ui.present = None;
+    set(&mut u, json!(true)).unwrap();
+    assert_eq!(u.app.inspect()["presentOptions"]["hideUi"], json!(true));
+    let a = u.app.session.doc().unwrap().top_frames(u.app.session.page().unwrap())[0];
+    u.run("proto.present", json!({"start": a}));
+    assert_eq!(presenter(&u)["hideUi"], json!(true));
 }

@@ -277,9 +277,22 @@ fn snapshots() {
     }
     // The second screen: the bar at 3×.
     r.u.app.run("select.set", serde_json::json!({"ids": []}));
-    r.u.app.ui.present.as_mut().map(|p| ux::step(p, true, 1.0));
+    if let Some(p) = r.u.app.ui.present.as_mut() {
+        ux::step(p, true, 1.0);
+    }
     r.frames(3);
     r.save_region(&dir.join("bar-counter.png"), Rect::from_min_size(Pos2::ZERO, vec2(480.0, 40.0)), 3);
+    // The controls hidden, and the bar slid back in at the top edge.
+    r.u.app.ui.present = None;
+    r.run("proto.present", serde_json::json!({"start": a}));
+    if let Some(p) = r.u.app.ui.present.as_mut() {
+        p.view.hide_ui = true;
+    }
+    r.frames(3);
+    r.save(&dir.join("hidden.png"));
+    r.frame(vec![Event::PointerMoved(Pos2::new(700.0, 2.0))]);
+    r.frames(20);
+    r.save(&dir.join("hidden-peek.png"));
     // The preview pane over the editor.
     r.u.app.ui.present = None;
     r.run("proto.preview", serde_json::json!({"start": a}));

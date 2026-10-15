@@ -258,11 +258,23 @@ pub struct PresentView {
     /// starts from the file's setting (`proto.settings {responsive}`) and follows it when it
     /// changes, and turning it on or off in the player doesn't change the file.
     pub responsive: bool,
+    /// Hide the presenter's own controls (the bar, the Inspect panel): the prototype takes the
+    /// whole window, centred. The pointer at the window's top edge slides the bar back in for as
+    /// long as it stays there; Cmd/Ctrl+\ or Escape bring it back for good.
+    pub hide_ui: bool,
 }
 
 impl Default for PresentView {
     fn default() -> Self {
-        Self { scale: PresentScale::Actual, device_frame: true, comments: false, hotspot_hints: true, inspect: false, responsive: false }
+        Self {
+            scale: PresentScale::Actual,
+            device_frame: true,
+            comments: false,
+            hotspot_hints: true,
+            inspect: false,
+            responsive: false,
+            hide_ui: false,
+        }
     }
 }
 
@@ -720,6 +732,8 @@ impl Presenter {
             "flinging": !self.fling.is_empty(),
             "gamepad": self.uses_pads,
             "shortcuts": self.ux.help,
+            "hideUi": self.view.hide_ui,
+            "barReveal": self.ux.reveal,
             "position": ux::position(self).map(|(i, n)| [i, n]),
             "controls": self.ux.controls.iter().map(|(n, r)| ((*n).to_string(), json!([r.min.x, r.min.y, r.max.x, r.max.y]))).collect::<serde_json::Map<String, Value>>(),
         })
@@ -1878,9 +1892,11 @@ struct Chrome {
     /// The player may take keys (the pane only while hovered, and never while the editor is
     /// typing: text on the canvas or in a field).
     keys: bool,
+    /// The full-window presenter's controls are hidden ([`PresentView::hide_ui`]).
+    hidden: bool,
 }
 
-const FULL: Chrome = Chrome { pane: false, bar_h: 40.0, pad: 32.0, round: 0, keys: true };
+const FULL: Chrome = Chrome { pane: false, bar_h: 40.0, pad: 32.0, round: 0, keys: true, hidden: false };
 
 /// What the player's top bar asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1934,7 +1950,9 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
             ux::run(&mut pres, act, &ctx, now, false);
         }
     }
-    if pres.view.inspect {
+    // Hidden, the presenter's own controls give the window to the prototype.
+    let hidden = pres.view.hide_ui;
+    if pres.view.inspect && !hidden {
         let t = Tokens::get(&ctx);
         egui::Panel::right("present_inspect")
             .resizable(false)
@@ -1943,7 +1961,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
             .show(ui, |ui| inspect_panel(app, ui, &pres));
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-        action = player(&mut pres, ui, ui.max_rect(), now, Chrome { keys: !typing, ..FULL }).or(action);
+        action = player(&mut pres, ui, ui.max_rect(), now, Chrome { keys: !typing, hidden, ..FULL }).or(action);
     });
     match action {
         Some(BarAction::Comments) => pres.view.comments = !pres.view.comments,
@@ -2086,7 +2104,7 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
     let canvas = app.canvas.rect;
     let style = ctx.global_style();
     let typing = ds.text_edit.is_some() || crate::a11y::field_focused(ctx);
-    let chrome = Chrome { pane: true, bar_h: 36.0, pad: 12.0, round: style.visuals.window_corner_radius.nw, keys: !typing };
+    let chrome = Chrome { pane: true, bar_h: 36.0, pad: 12.0, round: style.visuals.window_corner_radius.nw, keys: !typing, hidden: false };
     poll_pads(app, &mut pane.player, ctx);
     let mut action = None;
     egui::Window::new(tr("Prototype preview"))
@@ -2242,12 +2260,17 @@ fn corner_masks(s: Rect, r: f32, color: Color32) -> egui::Shape {
 fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) -> Option<BarAction> {
     let ctx = ui.ctx().clone();
     p.clock = now;
-    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), chrome.bar_h));
+    p.ux.controls.clear();
+    // With the controls hidden the prototype takes the whole window; the bar slides in over it
+    // from the top edge while the pointer asks for it (`slid`: where it is then), drawn last.
+    let hidden = chrome.hidden && !chrome.pane;
+    let slid = if hidden { ux::peek(p, &ctx, rect, chrome.bar_h, now) } else { None };
+    let bar = Rect::from_min_size(rect.min, vec2(rect.width(), if hidden { 0.0 } else { chrome.bar_h }));
     let area = Rect::from_min_max(pos2(rect.min.x, bar.max.y), rect.max);
     let bg = crate::theme::doc_c32(ui.ctx(), p.doc.as_ref().map(|d| page_settings(d, p.current)).unwrap_or_default().background);
     let r = chrome.round;
     ui.painter().rect_filled(area, CornerRadius { nw: 0, ne: 0, sw: r, se: r }, bg);
-    let action = top_bar(p, ui, bar, now, chrome);
+    let mut action = if hidden { None } else { top_bar(p, ui, bar, now, chrome) };
     if action == Some(BarAction::Restart) {
         p.restart(p.start, now);
     }
@@ -2277,7 +2300,9 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         ctx.request_repaint();
     }
     let resp = ui.interact(area, ui.id().with("present_area"), Sense::click_and_drag());
-    let over = resp.contains_pointer();
+    // (The bar sliding over the prototype takes the pointer from it.)
+    let under_bar = slid.is_some_and(|b| ctx.pointer_hover_pos().is_some_and(|q| b.contains(q)));
+    let over = resp.contains_pointer() && !under_bar;
     if let Some(l) = layout(p, area, chrome) {
         // The pane only takes the keyboard while the pointer is over it.
         input(p, &ctx, &l, over, chrome.keys && (!chrome.pane || over), chrome.pane, now);
@@ -2301,7 +2326,7 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         painter.rect_filled(l.screen, CornerRadius::ZERO, bg);
     }
     draw(p, &painter, &ctx, &l, now);
-    if p.view.inspect && !chrome.pane {
+    if p.view.inspect && !chrome.pane && !hidden {
         inspect_hover(p, &painter, &ctx, &l, area);
     }
     if let Some((d, _)) = body {
@@ -2317,6 +2342,15 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
     // And for the soonest mouse trigger waiting out its delay.
     if let Some(due) = p.waiting.iter().map(|w| w.due - now).reduce(f64::min) {
         crate::repaint_in(&ctx, due.clamp(0.0, 60.0));
+    }
+    // The hidden bar, sliding in over the prototype (a shadow sets it apart).
+    if let Some(bar) = slid {
+        let shadow = egui::Shadow { offset: [0, 2], blur: 10, spread: 0, color: Color32::from_black_alpha(110) };
+        ui.painter().add(shadow.as_shape(bar, CornerRadius::ZERO));
+        action = top_bar(p, ui, bar, now, chrome).or(action);
+        if action == Some(BarAction::Restart) {
+            p.restart(p.start, now);
+        }
     }
     action
 }
@@ -2376,7 +2410,6 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
             (BarAction::Help, tr_noop("Keyboard shortcuts"), Icon::Help),
         ]
     };
-    p.ux.controls.clear();
     let mut x = bar.max.x - if chrome.pane { 6.0 } else { 8.0 };
     for (act, label, icon) in buttons {
         // (The shortcut list's button reads "?", as the key.)
@@ -2501,6 +2534,11 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, now: f64
     }
     if menu_check(ui, p.view.hotspot_hints, tr("Show hotspot hints"), "") {
         p.view.hotspot_hints = !p.view.hotspot_hints;
+        ui.close();
+    }
+    ui.separator();
+    if menu_check(ui, p.view.hide_ui, tr("Hide UI"), ux::spec(ux::Act::HideUi)) {
+        ux::run(p, ux::Act::HideUi, ui.ctx(), now, false);
         ui.close();
     }
     if menu_check(ui, false, tr("Keyboard shortcuts"), ux::spec(ux::Act::Help)) {

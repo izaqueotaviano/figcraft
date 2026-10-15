@@ -7,8 +7,10 @@
 use egui::{Align2, Color32, Context, CornerRadius, Id, Key, Modifiers, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_doc::proto::{Easing, Transition};
 use figcraft_doc::{Document, NodeId};
+use serde_json::{Value, json};
 
-use super::{Presenter, page_settings};
+use super::{PresentView, Presenter, page_settings};
+use crate::FigApp;
 use crate::a11y::Tip;
 use crate::i18n::{tr, tr_noop, trf};
 use crate::icons::{self, Icon};
@@ -32,6 +34,8 @@ pub enum Act {
     Comments,
     /// The shortcut list.
     Help,
+    /// Hide or show the presenter's controls.
+    HideUi,
     /// End the presentation.
     Close,
 }
@@ -39,7 +43,8 @@ pub enum Act {
 #[cfg(test)]
 impl Act {
     /// Every act, in the order the list shows them (the table must hold each of them).
-    pub const ALL: &'static [Act] = &[Act::Next, Act::Prev, Act::Restart, Act::NextSize, Act::Fullscreen, Act::Comments, Act::Help, Act::Close];
+    pub const ALL: &'static [Act] =
+        &[Act::Next, Act::Prev, Act::Restart, Act::NextSize, Act::Fullscreen, Act::HideUi, Act::Comments, Act::Help, Act::Close];
 }
 
 /// Which modifier keys a chord needs.
@@ -48,7 +53,6 @@ pub enum With {
     /// None held.
     None,
     /// Cmd on macOS, Ctrl elsewhere (nothing else).
-    #[allow(dead_code)] // (the Hide UI key, next)
     Cmd,
     /// Shift (nothing else).
     Shift,
@@ -123,6 +127,13 @@ pub const SHORTCUTS: &[Shortcut] = &[
         pane: false,
     },
     Shortcut { act: Act::Fullscreen, label: tr_noop("Full screen"), group: tr_noop("View"), chords: &[chord(Key::F, With::None, "F")], pane: false },
+    Shortcut {
+        act: Act::HideUi,
+        label: tr_noop("Hide UI"),
+        group: tr_noop("View"),
+        chords: &[Chord { always: true, ..chord(Key::Backslash, With::Cmd, "Cmd+\\") }],
+        pane: false,
+    },
     Shortcut {
         act: Act::Comments,
         label: tr_noop("Comments"),
@@ -219,19 +230,104 @@ pub fn run(p: &mut Presenter, act: Act, ctx: &Context, now: f64, pane: bool) -> 
             p.ux.help = !p.ux.help;
             true
         }
+        Act::HideUi => {
+            p.view.hide_ui = !p.view.hide_ui;
+            p.ux.reveal = 0.0;
+            true
+        }
         // Escape is handled where the frame ends, after what else takes it ([`escape`]).
         Act::Close => false,
     }
 }
 
-/// What Escape does now: it closes the shortcut list first; true when it should end the
-/// presentation.
+/// What Escape does now: it closes the shortcut list first, then shows the hidden controls
+/// again; true when it should end the presentation (nothing was left to close or show).
 pub fn escape(p: &mut Presenter) -> bool {
     if p.ux.help {
         p.ux.help = false;
         return false;
     }
+    if p.view.hide_ui {
+        p.view.hide_ui = false;
+        p.ux.reveal = 0.0;
+        return false;
+    }
     true
+}
+
+/// How long the hidden bar takes to slide all the way in or out (seconds).
+const SLIDE_SECS: f64 = 0.14;
+/// How close to the window's top edge the pointer must be to ask for the hidden bar (points).
+const EDGE: f32 = 4.0;
+
+/// With the controls hidden: slide the bar in while the pointer is at the window's top edge (or
+/// over the bar, or one of its menus is open), out again when it isn't. Returns where the bar is
+/// now, `None` while it is away; the caller draws it over the prototype. A drag that began in the
+/// prototype doesn't pull the bar in as it passes the edge. `rect` is the whole window.
+pub fn peek(p: &mut Presenter, ctx: &Context, rect: Rect, bar_h: f32, now: f64) -> Option<Rect> {
+    let (pos, down) = ctx.input(|i| (i.pointer.hover_pos(), i.pointer.primary_down()));
+    let shown = p.ux.reveal > 0.0;
+    let zone = if shown { bar_h + 6.0 } else { EDGE };
+    let near = pos.is_some_and(|q| q.x >= rect.min.x && q.x <= rect.max.x && q.y >= rect.min.y - 1.0 && q.y <= rect.min.y + zone);
+    let want = (shown && egui::Popup::is_any_open(ctx)) || (near && (shown || !down));
+    // Steps of at most a frame at 30 Hz, so a window that was asleep slides in rather than jumps.
+    let dt = (now - p.ux.reveal_at).clamp(0.0, 1.0 / 30.0);
+    p.ux.reveal_at = now;
+    let step = (dt / SLIDE_SECS) as f32;
+    p.ux.reveal = (p.ux.reveal + if want { step } else { -step }).clamp(0.0, 1.0);
+    if (want && p.ux.reveal < 1.0) || (!want && p.ux.reveal > 0.0) {
+        ctx.request_repaint();
+    }
+    if p.ux.reveal <= 0.0 {
+        return None;
+    }
+    let t = p.ux.reveal;
+    let e = t * t * (3.0 - 2.0 * t);
+    Some(Rect::from_min_size(pos2(rect.min.x, rect.min.y - bar_h * (1.0 - e)), vec2(rect.width(), bar_h)))
+}
+
+// ---------------------------------------------------------------------------------------------
+// The control channel.
+
+/// The presenter's viewing options as `ui.inspect` shows them (`presentOptions`): what is kept for
+/// the next presentation.
+pub fn options_json(v: &PresentView) -> Value {
+    json!({
+        "scale": v.scale.id(),
+        "deviceFrame": v.device_frame,
+        "comments": v.comments,
+        "hotspotHints": v.hotspot_hints,
+        "inspect": v.inspect,
+        "responsive": v.responsive,
+        "hideUi": v.hide_ui,
+    })
+}
+
+/// Apply `f` to the options kept for the next presentation and to the presentation playing.
+fn both(app: &mut FigApp, f: impl Fn(&mut PresentView, &mut Ux)) {
+    f(&mut app.ui.present_view, &mut Ux::default());
+    if let Some(p) = app.ui.present.as_mut() {
+        f(&mut p.view, &mut p.ux);
+    }
+}
+
+/// `ui.set` keys for the presenter's controls (`proto.presentOptions` has the sizing ones):
+/// `presentHideUi` (true|false). They change the presentation playing and what the next one starts
+/// with.
+pub fn set_options(app: &mut FigApp, p: &Value) -> Result<(), String> {
+    let flag = |key: &str| -> Result<Option<bool>, String> {
+        match p.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => v.as_bool().map(Some).ok_or_else(|| format!("{key}: true|false")),
+        }
+    };
+    if let Some(on) = flag("presentHideUi")? {
+        both(app, |v, ux| {
+            v.hide_ui = on;
+            ux.reveal = 0.0;
+        });
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -364,6 +460,9 @@ pub struct Ux {
     /// Where the controls of the bar (and the panels) were drawn last, by name (window points):
     /// `ui.inspect` reports them so that a script can click them.
     pub controls: Vec<(&'static str, Rect)>,
+    /// How far the hidden bar has slid in, 0 (away) to 1 (all the way), and when it last moved.
+    pub reveal: f32,
+    pub reveal_at: f64,
 }
 
 impl Ux {
