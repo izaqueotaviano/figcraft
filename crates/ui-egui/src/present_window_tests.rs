@@ -374,9 +374,15 @@ fn a_screen_reader_or_another_window_keeps_the_presentation_where_it_is() {
     u.ctx.set_embed_viewports(false);
     u.ctx.enable_accesskit();
     u.frame(vec![]);
-    window::apply(&mut u.app, &u.ctx, true);
+    // (egui builds the screen reader's tree only while a pass runs, and that is where the entry
+    // asks: so the Options entry is clicked rather than `window::apply` called between frames.)
+    let out = frame_out(&mut u, vec![]);
+    click(&mut u, text_at(&out, &t("Options")));
+    let menu = frame_out(&mut u, vec![]);
+    click(&mut u, text_at(&menu, &t("Open in new window")));
     assert_eq!(presenter(&u)["window"], json!(false));
     assert_eq!(toast(&u), Some(t("With a screen reader running, the prototype presents in this window")));
+    assert!(window::covers_window(&u.app), "the presenter still covers the editor's window");
     // A window of its own opens from the editor's main window, not from another one.
     let (mut u, _) = abc();
     u.ctx.set_embed_viewports(false);
