@@ -82,13 +82,18 @@ pub(crate) fn t(s: &str) -> String {
     crate::i18n::tr(s).to_string()
 }
 
+/// A text as menu rows write it: a check mark or its room before the label doesn't count.
+fn bare(t: &str) -> &str {
+    t.trim_start_matches('\u{2713}').trim()
+}
+
 pub(crate) fn has_text(out: &egui::FullOutput, s: &str) -> bool {
-    texts(out).iter().any(|(t, _)| t.trim() == s)
+    texts(out).iter().any(|(t, _)| bare(t) == s)
 }
 
 /// The middle of the text `s` on screen (menu rows have a check mark's room before them).
 pub(crate) fn text_at(out: &egui::FullOutput, s: &str) -> Pos2 {
-    texts(out).into_iter().find(|(t, _)| t.trim() == s).unwrap_or_else(|| panic!("no text {s:?} on screen")).1
+    texts(out).into_iter().find(|(t, _)| bare(t) == s).unwrap_or_else(|| panic!("no text {s:?} on screen")).1
 }
 
 pub(crate) fn key_events(key: Key, modifiers: Modifiers) -> Vec<Event> {
@@ -218,6 +223,15 @@ fn every_listed_key_does_what_the_list_says() {
                     let out = key(&mut u);
                     let cmds = out.viewport_output.get(&egui::ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default();
                     assert!(cmds.contains(&egui::ViewportCommand::Fullscreen(true)), "{what}: {cmds:?}");
+                }
+                Act::Background => {
+                    assert_eq!(presenter(&u)["background"], json!("page"));
+                    key(&mut u);
+                    assert_eq!(presenter(&u)["background"], json!("#1E1E1E"), "{what}: the first preset");
+                    for _ in 0..5 {
+                        key(&mut u);
+                    }
+                    assert_eq!(presenter(&u)["background"], json!("page"), "{what}: round again after the five presets");
                 }
                 Act::Comments => {
                     assert_eq!(presenter(&u)["comments"], json!(false));
@@ -701,4 +715,147 @@ fn hide_ui_is_reachable_from_the_control_channel() {
     let a = u.app.session.doc().unwrap().top_frames(u.app.session.page().unwrap())[0];
     u.run("proto.present", json!({"start": a}));
     assert_eq!(presenter(&u)["hideUi"], json!(true));
+}
+
+use crate::present::raster_tests::Rec;
+use crate::present::ux::Background;
+
+fn px(img: &image::RgbaImage, x: u32, y: u32) -> [u8; 3] {
+    let p = img.get_pixel(x, y).0;
+    [p[0], p[1], p[2]]
+}
+
+#[test]
+fn backgrounds_parse_print_and_cycle() {
+    for (text, want) in [
+        ("page", Some(Background::Page)),
+        (" Page ", Some(Background::Page)),
+        ("WHITE", Some(Background::Color([255, 255, 255]))),
+        ("grey", Some(Background::Color([128, 128, 128]))),
+        ("#336699", Some(Background::Color([0x33, 0x66, 0x99]))),
+        ("369", Some(Background::Color([0x33, 0x66, 0x99]))),
+        ("#33669980", Some(Background::Color([0x33, 0x66, 0x99]))),
+        ("", None),
+        ("blue", None),
+        ("#12345", None),
+        ("#gg0000", None),
+    ] {
+        assert_eq!(Background::parse(text), want, "{text:?}");
+    }
+    for bg in [Background::Page, Background::Color([0, 0, 0]), Background::Color([0x33, 0x66, 0x99])] {
+        assert_eq!(Background::parse(&bg.id()), Some(bg), "{}", bg.id());
+    }
+    // The B key goes through the page's colour and the presets, in the menu's order, and round.
+    let mut bg = Background::Page;
+    let mut seen = vec![bg.id()];
+    for _ in 0..6 {
+        bg = bg.next();
+        seen.push(bg.id());
+    }
+    assert_eq!(seen, ["page", "#1E1E1E", "#808080", "#E6E6E6", "#FFFFFF", "#000000", "page"]);
+    assert_eq!(Background::Color([1, 2, 3]).next(), Background::Page, "a colour of the viewer's own goes back to the page's");
+    // Light colours get dark ink and a shadow under a device; mid greys and darks don't.
+    let light = |c: [u8; 3]| ux::is_light(egui::Color32::from_rgb(c[0], c[1], c[2]));
+    assert!(light([255, 255, 255]) && light([0xE6, 0xE6, 0xE6]) && light([0xF5, 0xF5, 0xF5]));
+    assert!(!light([0x80, 0x80, 0x80]) && !light([0x1E, 0x1E, 0x1E]) && !light([0, 0, 0]) && !light([0x0D, 0x99, 0xFF]));
+}
+
+#[test]
+fn the_colour_around_the_prototype_is_the_viewers_to_pick_and_the_files_stays() {
+    let mut s = Session::new();
+    let a = frame(&mut s, "A", 0.0);
+    ex(&mut s, "node.set", json!({"id": a, "props": {"fills": ["#FFFFFF"]}}));
+    frame(&mut s, "B", 400.0);
+    let mut r = Rec::new(s);
+    r.run("proto.present", json!({"start": a}));
+    let (page_before, dirty_before) = {
+        let ds = r.u.app.session.ds().unwrap();
+        (ds.doc.node(ds.page).map(|n| n.kind.clone()), ds.is_dirty())
+    };
+    let around = |r: &Rec| px(&r.image(), 40, 450);
+    let page = [0x1E, 0x1E, 0x1E];
+    assert_eq!(around(&r), page, "by default the Background of the Prototype settings");
+    assert_eq!(px(&r.image(), 720, 470), [255, 255, 255], "and the frame itself is the file's");
+    // The control channel picks one: a preset, then a hex colour, then back to the page's.
+    let set = |r: &mut Rec, v: &str| {
+        let res = crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &json!({"presentBackground": v}));
+        r.frames(2);
+        res
+    };
+    set(&mut r, "white").unwrap();
+    assert_eq!(around(&r), [255, 255, 255]);
+    assert_eq!(px(&r.image(), 700, 10), [0x2C, 0x2C, 0x2C], "the bar keeps its colours");
+    set(&mut r, "#336699").unwrap();
+    assert_eq!(around(&r), [0x33, 0x66, 0x99]);
+    assert_eq!(r.u.app.inspect()["presentOptions"]["background"], json!("#336699"));
+    assert!(set(&mut r, "chartreuse").is_err(), "unknown colours are refused");
+    assert_eq!(around(&r), [0x33, 0x66, 0x99], "and change nothing");
+    // Not the file's: the page's setting and the file's unsaved state are as they were.
+    {
+        let ds = r.u.app.session.ds().unwrap();
+        assert_eq!((ds.doc.node(ds.page).map(|n| n.kind.clone()), ds.is_dirty()), (page_before, dirty_before));
+    }
+    // Kept for the next presentation.
+    r.u.app.ui.present = None;
+    r.run("proto.present", json!({"start": a}));
+    assert_eq!(around(&r), [0x33, 0x66, 0x99]);
+    set(&mut r, "page").unwrap();
+    assert_eq!(around(&r), page);
+    // The B key.
+    press(&mut r.u, Key::B, Modifiers::NONE);
+    r.frames(2);
+    assert_eq!(around(&r), [0x1E, 0x1E, 0x1E], "the first preset is dark");
+    press(&mut r.u, Key::B, Modifiers::NONE);
+    r.frames(2);
+    assert_eq!(around(&r), [0x80, 0x80, 0x80]);
+}
+
+#[test]
+fn the_options_menu_picks_a_swatch_or_types_a_hex_colour_and_stays_open() {
+    let (mut u, _) = abc();
+    let out = frame_out(&mut u, vec![]);
+    click(&mut u, text_at(&out, &t("Options")));
+    let menu = frame_out(&mut u, vec![]);
+    for label in ["Page colour", "Dark", "Mid grey", "Light", "White", "Black"] {
+        assert!(has_text(&menu, &t(label)), "the menu has {label}: {:?}", texts(&menu));
+    }
+    assert!(
+        has_text(&menu, "✓ Page colour") || texts(&menu).iter().any(|(s, _)| s.contains("✓") && s.contains(&t("Page colour"))),
+        "the page's colour is the one ticked"
+    );
+    click(&mut u, text_at(&menu, &t("White")));
+    assert_eq!(presenter(&u)["background"], json!("#FFFFFF"));
+    // The menu is still open (colours can be tried one after the other).
+    let menu = frame_out(&mut u, vec![]);
+    assert!(has_text(&menu, &t("Black")), "still open");
+    click(&mut u, text_at(&menu, &t("Black")));
+    assert_eq!(presenter(&u)["background"], json!("#000000"));
+    // The hex field takes a colour typed in (Enter commits); what isn't a colour changes nothing.
+    let menu = frame_out(&mut u, vec![]);
+    let field = texts(&menu).into_iter().find(|(s, _)| s == "000000").expect("the hex field shows the colour drawn").1;
+    for (typed, want) in [("336699", "#336699"), ("nope", "#336699")] {
+        click(&mut u, field);
+        frame_out(&mut u, key_events(Key::A, Modifiers::COMMAND));
+        frame_out(&mut u, vec![Event::Text(typed.to_string())]);
+        frame_out(&mut u, key_events(Key::Enter, Modifiers::NONE));
+        u.frames(2, Vec::new);
+        assert_eq!(presenter(&u)["background"], json!(want), "typed {typed:?}");
+    }
+    assert!(u.app.ui.present.is_some());
+}
+
+#[test]
+fn a_device_gets_a_shadow_on_a_light_background_so_a_pale_body_keeps_its_outline() {
+    let (d, color) = (figcraft_doc::proto::PrototypeSettings::DEVICES[0], figcraft_doc::proto::PrototypeSettings::DEVICES[0].colors[1]);
+    assert_eq!(color.name, "White");
+    let count = |light: bool| {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let screen = Rect::from_min_size(pos2(100.0, 100.0), vec2(d.width as f32, d.height as f32));
+            super::device_body(ui.painter(), d.name, screen, false, color, light);
+        });
+        out.textures_delta.clear();
+        out.shapes.len()
+    };
+    assert!(count(true) > count(false), "the shadow is one more shape");
 }

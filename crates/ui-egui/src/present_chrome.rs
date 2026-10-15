@@ -36,6 +36,8 @@ pub enum Act {
     Help,
     /// Hide or show the presenter's controls.
     HideUi,
+    /// The next colour around the prototype.
+    Background,
     /// End the presentation.
     Close,
 }
@@ -44,7 +46,7 @@ pub enum Act {
 impl Act {
     /// Every act, in the order the list shows them (the table must hold each of them).
     pub const ALL: &'static [Act] =
-        &[Act::Next, Act::Prev, Act::Restart, Act::NextSize, Act::Fullscreen, Act::HideUi, Act::Comments, Act::Help, Act::Close];
+        &[Act::Next, Act::Prev, Act::Restart, Act::NextSize, Act::Fullscreen, Act::HideUi, Act::Background, Act::Comments, Act::Help, Act::Close];
 }
 
 /// Which modifier keys a chord needs.
@@ -132,6 +134,13 @@ pub const SHORTCUTS: &[Shortcut] = &[
         label: tr_noop("Hide UI"),
         group: tr_noop("View"),
         chords: &[Chord { always: true, ..chord(Key::Backslash, With::Cmd, "Cmd+\\") }],
+        pane: false,
+    },
+    Shortcut {
+        act: Act::Background,
+        label: tr_noop("Next background colour"),
+        group: tr_noop("View"),
+        chords: &[chord(Key::B, With::None, "B")],
         pane: false,
     },
     Shortcut {
@@ -235,6 +244,10 @@ pub fn run(p: &mut Presenter, act: Act, ctx: &Context, now: f64, pane: bool) -> 
             p.ux.reveal = 0.0;
             true
         }
+        Act::Background => {
+            p.view.background = p.view.background.next();
+            true
+        }
         // Escape is handled where the frame ends, after what else takes it ([`escape`]).
         Act::Close => false,
     }
@@ -287,6 +300,115 @@ pub fn peek(p: &mut Presenter, ctx: &Context, rect: Rect, bar_h: f32, now: f64) 
 }
 
 // ---------------------------------------------------------------------------------------------
+// The colour around the prototype.
+
+/// The colour around the prototype in the full-window presenter: the page's own (the Background of
+/// its Prototype settings), or one the viewer picked. A viewing option: it isn't saved in the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Background {
+    #[default]
+    Page,
+    Color([u8; 3]),
+}
+
+impl Background {
+    /// The presets the Options menu offers after the page's colour: id (for commands), label
+    /// (English) and colour.
+    pub const PRESETS: [(&'static str, &'static str, [u8; 3]); 5] = [
+        ("dark", tr_noop("Dark"), [0x1E, 0x1E, 0x1E]),
+        ("grey", tr_noop("Mid grey"), [0x80, 0x80, 0x80]),
+        ("light", tr_noop("Light"), [0xE6, 0xE6, 0xE6]),
+        ("white", tr_noop("White"), [0xFF, 0xFF, 0xFF]),
+        ("black", tr_noop("Black"), [0x00, 0x00, 0x00]),
+    ];
+
+    /// Its id in `ui.inspect` and `ui.set`: `page` or `#RRGGBB`.
+    pub fn id(self) -> String {
+        match self {
+            Background::Page => "page".into(),
+            Background::Color([r, g, b]) => format!("#{r:02X}{g:02X}{b:02X}"),
+        }
+    }
+
+    /// `page`, a preset's id (`dark`, `grey`, `light`, `white`, `black`) or a colour in hex as the
+    /// colour fields take it (`#RRGGBB`, `RGB`, ...; transparency is ignored).
+    pub fn parse(s: &str) -> Option<Self> {
+        let t = s.trim();
+        if t.eq_ignore_ascii_case("page") {
+            return Some(Background::Page);
+        }
+        if let Some((_, _, rgb)) = Self::PRESETS.iter().find(|(id, ..)| t.eq_ignore_ascii_case(id)) {
+            return Some(Background::Color(*rgb));
+        }
+        let [r, g, b, _] = figcraft_color::Color::from_hex(t)?.to_rgba8();
+        Some(Background::Color([r, g, b]))
+    }
+
+    /// The colour drawn, given the page's own.
+    pub fn color(self, page: Color32) -> Color32 {
+        match self {
+            Background::Page => page,
+            Background::Color([r, g, b]) => Color32::from_rgb(r, g, b),
+        }
+    }
+
+    /// The next one for the B key: the page's colour, then the presets in the order of the menu,
+    /// then the page's again. A colour that is none of them goes back to the page's.
+    pub fn next(self) -> Self {
+        let at = Self::PRESETS.iter().position(|(.., rgb)| Background::Color(*rgb) == self);
+        match (self, at) {
+            (Background::Page, _) => Background::Color(Self::PRESETS[0].2),
+            (_, Some(i)) => Self::PRESETS.get(i + 1).map_or(Background::Page, |(.., rgb)| Background::Color(*rgb)),
+            (_, None) => Background::Page,
+        }
+    }
+}
+
+/// Whether `c` is a light colour: dark text and a shadow read better on it than light ones.
+pub fn is_light(c: Color32) -> bool {
+    let [r, g, b, _] = c.to_array();
+    (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)) / 255.0 > 0.6
+}
+
+/// The Background part of the Options menu: the page's colour, the presets (each with its swatch)
+/// and a hex field. The menu stays open while colours are tried.
+pub fn background_menu(p: &mut Presenter, ui: &mut Ui, page: Color32) {
+    let t = Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(tr("Background")).font(semibold(11.0)).color(t.menu_dim));
+    let swatch = move |color: Color32| {
+        move |painter: &Painter, row: Rect, _text: Color32| {
+            let r = Rect::from_center_size(pos2(row.max.x - 16.0, row.center().y), vec2(14.0, 14.0));
+            painter.rect_filled(r, CornerRadius::same(3), color);
+            painter.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.0, Color32::from_gray(128)), StrokeKind::Inside);
+        }
+    };
+    let rows: Vec<(Background, String, Color32)> = std::iter::once((Background::Page, tr("Page colour").to_string(), page))
+        .chain(
+            Background::PRESETS
+                .iter()
+                .map(|(_, label, rgb)| (Background::Color(*rgb), tr(label).to_string(), Color32::from_rgb(rgb[0], rgb[1], rgb[2]))),
+        )
+        .collect();
+    for (bg, label, color) in rows {
+        let mark = if p.view.background == bg { "✓ " } else { "    " };
+        if crate::right::menu_item_with(ui, &format!("{mark}{label}"), "", 26.0, swatch(color)) {
+            p.view.background = bg;
+        }
+    }
+    // The hex field: what is drawn now (so it is the page's colour until another is picked).
+    let shown = p.view.background.color(page);
+    let hex = figcraft_color::Color::from_rgba8(shown.r(), shown.g(), shown.b(), 255).to_hex();
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        if let Some(text) = crate::widgets::text_field_named(ui, Id::new("present_background_hex"), &hex, 112.0, tr("Background"))
+            && let Some(bg @ Background::Color(_)) = Background::parse(&text)
+        {
+            p.view.background = bg;
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------------------------
 // The control channel.
 
 /// The presenter's viewing options as `ui.inspect` shows them (`presentOptions`): what is kept for
@@ -300,6 +422,7 @@ pub fn options_json(v: &PresentView) -> Value {
         "inspect": v.inspect,
         "responsive": v.responsive,
         "hideUi": v.hide_ui,
+        "background": v.background.id(),
     })
 }
 
@@ -312,7 +435,8 @@ fn both(app: &mut FigApp, f: impl Fn(&mut PresentView, &mut Ux)) {
 }
 
 /// `ui.set` keys for the presenter's controls (`proto.presentOptions` has the sizing ones):
-/// `presentHideUi` (true|false). They change the presentation playing and what the next one starts
+/// `presentHideUi` (true|false), `presentBackground` (`page`, `dark`, `grey`, `light`, `white`,
+/// `black` or a hex colour). They change the presentation playing and what the next one starts
 /// with.
 pub fn set_options(app: &mut FigApp, p: &Value) -> Result<(), String> {
     let flag = |key: &str| -> Result<Option<bool>, String> {
@@ -326,6 +450,10 @@ pub fn set_options(app: &mut FigApp, p: &Value) -> Result<(), String> {
             v.hide_ui = on;
             ux.reveal = 0.0;
         });
+    }
+    if let Some(v) = p.get("presentBackground").filter(|v| !v.is_null()) {
+        let bg = v.as_str().and_then(Background::parse).ok_or("presentBackground: page, dark, grey, light, white, black or a hex colour")?;
+        both(app, |v, _| v.background = bg);
     }
     Ok(())
 }

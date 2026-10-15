@@ -262,6 +262,8 @@ pub struct PresentView {
     /// whole window, centred. The pointer at the window's top edge slides the bar back in for as
     /// long as it stays there; Cmd/Ctrl+\ or Escape bring it back for good.
     pub hide_ui: bool,
+    /// The colour around the prototype: the page's (the default) or one picked here.
+    pub background: ux::Background,
 }
 
 impl Default for PresentView {
@@ -274,6 +276,7 @@ impl Default for PresentView {
             inspect: false,
             responsive: false,
             hide_ui: false,
+            background: ux::Background::Page,
         }
     }
 }
@@ -733,6 +736,7 @@ impl Presenter {
             "gamepad": self.uses_pads,
             "shortcuts": self.ux.help,
             "hideUi": self.view.hide_ui,
+            "background": self.view.background.id(),
             "barReveal": self.ux.reveal,
             "position": ux::position(self).map(|(i, n)| [i, n]),
             "controls": self.ux.controls.iter().map(|(n, r)| ((*n).to_string(), json!([r.min.x, r.min.y, r.max.x, r.max.y]))).collect::<serde_json::Map<String, Value>>(),
@@ -2154,12 +2158,21 @@ fn rim(w: f32, b: f32) -> f32 {
 /// Body of the presentation device behind the screen `s` (drawn in code: rounded slabs in the
 /// device's colour with black glass round the screen). Turned to landscape (a quarter turn
 /// counter-clockwise), a phone's left side is at the bottom.
-fn device_body(p: &egui::Painter, device: &str, s: Rect, landscape: bool, color: DeviceColor) {
+fn device_body(p: &egui::Painter, device: &str, s: Rect, landscape: bool, color: DeviceColor, light_bg: bool) {
     let (body, edge, metal) = (shade(color.rgb, 0.0), shade(color.rgb, -0.3), shade(color.rgb, 0.12));
     let w = upright_w(s.size(), landscape);
     let (b, screen_r) = bezel(device, w);
     let band = rim(w, b);
     let radius = |r: f32| CornerRadius::same(r.clamp(0.0, 255.0) as u8);
+    // On a light background a pale body would melt into it: a soft shadow under the whole device
+    // keeps its outline.
+    if light_bg {
+        let (x, top, bottom) = body_outset(device, s.size(), landscape);
+        let outer = Rect::from_min_max(s.min - vec2(x, top), s.max + vec2(x, bottom));
+        let r = if device == "MacBook Air" || device == "Desktop" { 8.0 } else { screen_r + b };
+        let shadow = egui::Shadow { offset: [0, 4], blur: 18, spread: 0, color: Color32::from_black_alpha(70) };
+        p.add(shadow.as_shape(outer, radius(r)));
+    }
     match device {
         "MacBook Air" => {
             // The lid's coloured edge round black glass, then the base: a thin slab wider than
@@ -2267,7 +2280,9 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
     let slid = if hidden { ux::peek(p, &ctx, rect, chrome.bar_h, now) } else { None };
     let bar = Rect::from_min_size(rect.min, vec2(rect.width(), if hidden { 0.0 } else { chrome.bar_h }));
     let area = Rect::from_min_max(pos2(rect.min.x, bar.max.y), rect.max);
-    let bg = crate::theme::doc_c32(ui.ctx(), p.doc.as_ref().map(|d| page_settings(d, p.current)).unwrap_or_default().background);
+    // The page's own background fills a device's screen; the viewer may pick another one for what is around.
+    let page_bg = crate::theme::doc_c32(ui.ctx(), p.doc.as_ref().map(|d| page_settings(d, p.current)).unwrap_or_default().background);
+    let bg = p.view.background.color(page_bg);
     let r = chrome.round;
     ui.painter().rect_filled(area, CornerRadius { nw: 0, ne: 0, sw: r, se: r }, bg);
     let mut action = if hidden { None } else { top_bar(p, ui, bar, now, chrome) };
@@ -2278,7 +2293,8 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         if !chrome.pane {
             return Some(BarAction::Close);
         }
-        ui.painter().text(area.center(), Align2::CENTER_CENTER, tr("Select a frame to preview it"), regular(12.0), Color32::from_gray(170));
+        let ink = if ux::is_light(bg) { Color32::from_gray(70) } else { Color32::from_gray(170) };
+        ui.painter().text(area.center(), Align2::CENTER_CENTER, tr("Select a frame to preview it"), regular(12.0), ink);
         return action;
     }
     // Scroll animation (Scroll to): frames scroll, a page scrolling through the window pans.
@@ -2321,9 +2337,9 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
     let body = l.device.zip(l.color);
     if l.device.is_some() {
         if let Some((d, c)) = body {
-            device_body(&painter, d.name, l.screen, l.landscape, c);
+            device_body(&painter, d.name, l.screen, l.landscape, c, ux::is_light(bg));
         }
-        painter.rect_filled(l.screen, CornerRadius::ZERO, bg);
+        painter.rect_filled(l.screen, CornerRadius::ZERO, page_bg);
     }
     draw(p, &painter, &ctx, &l, now);
     if p.view.inspect && !chrome.pane && !hidden {
@@ -2445,7 +2461,10 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
             ui.painter().text(br.center(), Align2::CENTER_CENTER, shown, regular(11.5), text);
         }
         if *act == BarAction::Options {
-            crate::right::menu_popup(&resp).width(220.0).show(|ui| options_menu(p, ui, device, now));
+            crate::right::menu_popup(&resp)
+                .width(220.0)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| options_menu(p, ui, device, now));
         } else if resp.clicked() {
             action = Some(*act);
         }
@@ -2536,6 +2555,10 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, now: f64
         p.view.hotspot_hints = !p.view.hotspot_hints;
         ui.close();
     }
+    ui.separator();
+    // The colour around the prototype (the page's own, a preset or a hex colour).
+    let page_bg = p.doc.as_ref().map(|d| page_settings(d, p.current)).unwrap_or_default().background;
+    ux::background_menu(p, ui, crate::theme::doc_c32(ui.ctx(), page_bg));
     ui.separator();
     if menu_check(ui, p.view.hide_ui, tr("Hide UI"), ux::spec(ux::Act::HideUi)) {
         ux::run(p, ux::Act::HideUi, ui.ctx(), now, false);

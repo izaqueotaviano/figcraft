@@ -162,6 +162,22 @@ impl Rec {
         out
     }
 
+    /// A click at `at`, then a few frames.
+    pub fn click(&mut self, at: Pos2) {
+        let b = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        self.frame(vec![Event::PointerMoved(at)]);
+        self.frame(vec![b(true)]);
+        self.frame(vec![b(false)]);
+        self.frames(3);
+    }
+
+    /// The middle of the presenter's control `name` (`presenter.controls`).
+    pub fn control(&self, name: &str) -> Pos2 {
+        let c = &self.u.app.inspect()["presenter"]["controls"][name];
+        let f = |i: usize| c[i].as_f64().unwrap_or_else(|| panic!("no control {name:?}")) as f32;
+        Pos2::new((f(0) + f(2)) / 2.0, (f(1) + f(3)) / 2.0)
+    }
+
     pub fn frames(&mut self, n: usize) {
         for _ in 0..n {
             self.frame(Vec::new());
@@ -174,6 +190,12 @@ impl Rec {
         self.u.app.handle_ui_requests();
         self.frame(Vec::new());
         r
+    }
+
+    /// The last frame drawn (the window's size, 1 pixel per point).
+    pub fn image(&self) -> image::RgbaImage {
+        let prims = self.u.ctx.tessellate(self.last.clone(), 1.0);
+        self.raster.draw(&prims, 1.0, (self.u.size.x as usize, self.u.size.y as usize), Color32::from_gray(40))
     }
 
     /// The last frame as a PNG at `path` (the window's size, 1 pixel per point).
@@ -293,6 +315,28 @@ fn snapshots() {
     r.frame(vec![Event::PointerMoved(Pos2::new(700.0, 2.0))]);
     r.frames(20);
     r.save(&dir.join("hidden-peek.png"));
+    // The Options menu with the colour around the prototype (the controls come back: the hidden
+    // state is kept between presentations).
+    r.u.app.ui.present = None;
+    crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &serde_json::json!({"presentHideUi": false})).unwrap();
+    r.frame(vec![Event::PointerMoved(Pos2::new(300.0, 400.0))]);
+    r.run("proto.present", serde_json::json!({"start": a}));
+    r.click(r.control("options"));
+    r.frames(40);
+    r.save_region(&dir.join("options.png"), Rect::from_min_size(Pos2::new(1000.0, 0.0), vec2(440.0, 680.0)), 1);
+    // A pale device on a light background (and on a dark one).
+    r.u.app.ui.present = None;
+    r.run("proto.settings", serde_json::json!({"device": "iPhone 16", "color": "White"}));
+    r.run("proto.present", serde_json::json!({"start": a}));
+    r.run("proto.presentOptions", serde_json::json!({"scale": "fit"}));
+    r.frames(3);
+    r.save_region(&dir.join("device-dark.png"), Rect::from_min_size(Pos2::new(420.0, 40.0), vec2(600.0, 860.0)), 1);
+    crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &serde_json::json!({"presentBackground": "white"})).unwrap();
+    r.frames(3);
+    r.save_region(&dir.join("device-light.png"), Rect::from_min_size(Pos2::new(420.0, 40.0), vec2(600.0, 860.0)), 1);
+    crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &serde_json::json!({"presentBackground": "page"})).unwrap();
+    r.u.app.ui.present = None;
+    r.run("proto.settings", serde_json::json!({"device": "None"}));
     // The preview pane over the editor.
     r.u.app.ui.present = None;
     r.run("proto.preview", serde_json::json!({"start": a}));
