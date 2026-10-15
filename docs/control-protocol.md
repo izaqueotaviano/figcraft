@@ -107,8 +107,14 @@ whether a click where nothing reacts flashes them (`hotspotHints`) and they are 
 (`inspected`) (`null` when nothing plays). `media` holds the videos playing on the screen and in
 the open overlays (`videos`: `[{id, playing, ended, muted, looping, position, duration, frame,
 frames}]`, seconds and picture indexes), and how many times a screen's texture was rendered whole
-with a video in it (`renders`) or only a moving video's area was patched in (`patches`). `presentOptions` holds the options the next presentation
-starts with (`scale`, `deviceFrame`, `comments`, `hotspotHints`, `inspect`).
+with a video in it (`renders`) or only a moving video's area was patched in (`patches`). The presenter's
+own controls report `shortcuts` (the `?` list shows), `hideUi`, `background` (`page` or `#RRGGBB`),
+`sidePanel`, `position` (`[3, 12]`, the "3 / 12" of the bar, else `null`), `barReveal` (0–1, how far a
+hidden bar has slid in), `thumbnails` (the screens panel's cache: `kept`, `drawnLastFrame`, `waiting`,
+`total`, `slowestMs`), `controls` (the bar's buttons and the panels, by name, with their rect in window
+points) and `window` (true while the prototype plays in a window of its own). `presentOptions` holds
+the options the next presentation starts with (`scale`, `deviceFrame`, `comments`, `hotspotHints`,
+`inspect`, `responsive`, `hideUi`, `background`, `sidePanel`).
 `textPreview` is true while a live text preview shows on the canvas (a hovered text style or named
 instance, a dragged axis slider; see `text.preview` in [mcp.md](mcp.md)).
 `focus` is keyboard navigation's state: the `region` with the keyboard (`toolbar`, `layers`,
@@ -179,9 +185,11 @@ keys down for the frames that follow, e.g. Alt while dragging a component from t
 an instance to swap it; all false releases them) and `{gamepad: "A" | "Gamepad A" | 0}` (a
 controller button pressed in the prototype playing, the presenter's or else the preview pane's: a
 short name, a key/gamepad trigger's name or a standard layout index 0–16; an error when no prototype
-plays); positions are window points. Events of one call
-arrive in the same frame, so send a press and its release (or a double-click's two clicks) as
-separate calls. Returns `{queued}`.
+plays); positions are window points. `viewport: "present"` sends the events to the window the
+prototype plays in when it has one of its own (`ui.set {presentWindow: true}`), as if they happened
+there (an error when it doesn't); without it they go to the window asked for with `window`. Events
+of one call arrive in the same frame, so send a press and its release (or a double-click's two
+clicks) as separate calls. Returns `{queued}`.
 
 ```json
 {"id":6,"method":"ui.input","params":{"events":[{"move":[1000,315]}]}}
@@ -193,7 +201,7 @@ separate calls. Returns `{queued}`.
 
 Invoke a menu item exactly like clicking it (this may open a dialog). Returns `{ok, lastError}`.
 
-### `ui.set {rightTab?, leftTab?, theme?, home?, homeSection?, homeRecentsView?, homeRecentsSort?, homeRecentsOrder?, palette?, mainMenu?, focusRegion?, colorPicker?, variables?, layerFilter?, collapseLayers?, exportPreview?, preview?, presentScroll?, colorProfileDialog?, stylePicker?, stylePickerEdit?, stylePickerView?, iconGallery?, protoEditor?, contextMenu?, contextSelectLayer?, commentOpen?, commentDraft?, commentFilter?, commentSort?, commentSearch?, commentReply?, commentEdit?, presentComments?, devCompare?, devCompareMode?, devCompareSplit?, annotationFilter?, resetFrameStats?, pluginsWindow?, pluginsTab?, pluginConfirm?, pluginForm?}`
+### `ui.set {rightTab?, leftTab?, theme?, home?, homeSection?, homeRecentsView?, homeRecentsSort?, homeRecentsOrder?, palette?, mainMenu?, focusRegion?, colorPicker?, variables?, layerFilter?, collapseLayers?, exportPreview?, preview?, presentScroll?, colorProfileDialog?, stylePicker?, stylePickerEdit?, stylePickerView?, iconGallery?, protoEditor?, contextMenu?, contextSelectLayer?, commentOpen?, commentDraft?, commentFilter?, commentSort?, commentSearch?, commentReply?, commentEdit?, presentComments?, presentHideUi?, presentBackground?, presentSidePanel?, presentWindow?, devCompare?, devCompareMode?, devCompareSplit?, annotationFilter?, resetFrameStats?, pluginsWindow?, pluginsTab?, pluginConfirm?, pluginForm?}`
 
 Switch panels and modes: `rightTab` `design|prototype|inspect`, `leftTab` `file|assets`, `theme`,
 `home` (bool), `homeSection` (`recents`, `online` or `templates`: which section the home screen shows, as `ui.inspect` reports it; opening
@@ -228,7 +236,15 @@ closes it), `commentDraft` (`{x, y}`: start a new comment there), `commentFilter
 (`date|page`), `commentSearch` (the panel's search text), `commentReply` (the open thread's reply
 text, focused with the cursor at its end: an `@` there shows the mention picker), `commentEdit` (a
 message index of the open thread to edit, 0 for the first; `null` stops), `presentComments` (bool:
-the presenter shows the presented frame's comments, also Shift+C there). Dev Mode: `devCompare` (a
+the presenter shows the presented frame's comments, also Shift+C there), `presentHideUi` (bool: hide the
+presenter's bar and Inspect panel, also `Cmd/Ctrl+\` there; the pointer at the window's top edge slides
+the bar back in), `presentBackground` (`page|dark|grey|light|white|black` or a hex colour: the colour
+around the prototype, kept for the next presentation and not saved in the file), `presentSidePanel`
+(bool: the presenter's screens panel with thumbnails, also S there) and `presentWindow` (bool: play the
+prototype in a window of its own, starting a presentation from the selection or the first screen when none
+plays; false puts it back in the editor's window; where there is no window to give, in the browser build,
+with a screen reader running or from a window that isn't the main one, it stays where it is and a message
+says why). Dev Mode: `devCompare` (a
 ready-for-dev frame or section id opens the Compare changes view, like `dev.compare {id, show:
 true}`; `null` closes it) with `devCompareMode` (`sideBySide|overlay`) and `devCompareSplit` (the
 overlay slider, 0–1), `annotationFilter` (`all`, `none` for uncategorised, or a category id or name:
@@ -238,10 +254,12 @@ the annotations the canvas shows). `resetFrameStats` (true: start `framesDrawn` 
 `mentions` the picker offers, `devCompare` (`{id, mode, split}` or `null`), `devFocus` (the frame the
 focus view shows, or `null`) and `annotationFilter`).
 
-### `ui.screenshot {path}`
+### `ui.screenshot {path, viewport?}`
 
 PNG of the whole window (`window` picks one), UI included (needs a visible window; an idle one draws the frame to
-capture). Returns `{path, width, height}`, or an error after 60 s when the window doesn't deliver.
+capture). `viewport: "present"` captures the window the prototype plays in when it has one of its own
+(`ui.set {presentWindow: true}`; an error when it doesn't; it waits for that window's first frame).
+Returns `{path, width, height}`, or an error after 60 s when the window doesn't deliver.
 
 ### `ui.render {path, scale?, ids?}`
 
