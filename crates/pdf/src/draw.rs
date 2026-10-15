@@ -425,6 +425,8 @@ impl<'a> Exporter<'a> {
                     self.raster_paint(s, path, &kp, r, p, w, h, xf);
                 }
             }
+            // A PDF page has no moving picture: a video prints as its poster picture.
+            PaintKind::Video(_) => self.raster_paint(s, path, &kp, r, p, w, h, xf),
             PaintKind::Gradient(g) if !matches!(g.kind, GradientKind::Linear | GradientKind::Radial) => {
                 self.raster_paint(s, path, &kp, r, p, w, h, xf)
             }

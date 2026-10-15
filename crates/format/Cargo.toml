@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 figcraft-doc = { workspace = true }
 figcraft-pathops = { workspace = true }
+figcraft-media = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 zip = { workspace = true }
@@ -18,3 +19,6 @@ flate2 = { workspace = true }
 ruzstd = { workspace = true }
 sha2 = { workspace = true }
 image = { workspace = true }
+
+[dev-dependencies]
+figcraft-media = { workspace = true, features = ["testing"] }

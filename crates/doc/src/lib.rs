@@ -1122,6 +1122,15 @@ fn remap_action(a: &mut proto::Action, map: &BTreeMap<NodeId, NodeId>) {
                 *dest = *m;
             }
         }
+        // A video layer copied together with its controls stays their target.
+        MediaPlayPause { target: Some(t), .. }
+        | MediaMuteUnmute { target: Some(t), .. }
+        | MediaSkip { target: Some(t), .. }
+        | MediaSkipTo { target: Some(t), .. } => {
+            if let Some(m) = map.get(t) {
+                *t = *m;
+            }
+        }
         _ => {}
     }
 }
@@ -1152,6 +1161,8 @@ mod proto_expr_parse_tests;
 mod proto_expr_tests;
 #[cfg(test)]
 mod proto_link_tests;
+#[cfg(test)]
+mod proto_media_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

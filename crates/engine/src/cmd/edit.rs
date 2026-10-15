@@ -467,11 +467,12 @@ pub fn copy_to_clipboard(s: &mut Session, ids: &[NodeId]) -> Result<()> {
             r.transform = world;
         }
         for n in &sub {
-            for p in n.fills.iter().chain(n.strokes.iter()) {
-                if let figcraft_color::PaintKind::Image(img) = &p.kind
-                    && let Some(d) = doc.images.get(&img.image)
-                {
-                    images.insert(img.image.clone(), d.clone());
+            // Images and videos both live in the asset store.
+            let mut hashes = std::collections::BTreeSet::new();
+            figcraft_doc::library::paint_images(n.fills.iter().chain(n.strokes.iter()), &mut hashes);
+            for h in hashes {
+                if let Some(d) = doc.images.get(&h) {
+                    images.insert(h, d.clone());
                 }
             }
         }

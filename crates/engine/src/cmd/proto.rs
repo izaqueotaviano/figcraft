@@ -13,7 +13,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "proto.interaction.add",
             "Add interaction",
-            "{id?, trigger? {type: onClick|onHover|onPress|onDrag|mouseEnter|mouseLeave|mouseDown|mouseUp|afterDelay {ms}|keyPress {key (a key or a combination: Shift+K, Ctrl+Alt+Delete; or a controller button: Gamepad A|B|X|Y|LB|RB|LT|RT|View|Menu|LS|RS|Up|Down|Left|Right|Home)}}, action {type: navigate {preserveScroll?}|back|scrollTo {offset? [x, y] (where the layer ends up from the top-left)}|openOverlay {position?, offset? [x, y] (position manual: the overlay's top-left from the top-left of the layer that opens it; without it, right below that layer), close_on_outside? (default true), background?}|swapOverlay|closeOverlay|openUrl {url, newTab? (default true: a new tab; false opens it in the page the prototype runs in, in the web version)}|changeTo|setVariable {variable, value | expression (text, e.g. \"count + 1\")}|setVariableMode {collection, mode}|conditional {blocks [{condition? | expression? (text, e.g. \"count >= 3\"), actions}]}, dest?}, actions? [..], transition? {type: instant|dissolve|smartAnimate|moveIn|moveOut|push|slideIn|slideOut, direction?: left|right|top|bottom}, durationMs?, easing? linear|easeIn|easeOut|easeInOut|easeInBack|easeOutBack|easeInOutBack|gentle|quick|bouncy|slow|{customBezier {x1, y1, x2, y2}}|{customSpring {mass, stiffness, damping}}}, delayMs? (mouse enter, leave, down and up: how long after the gesture the actions run, up to 600000)} — or {id, dest} for a click-navigate. Returns {index}",
+            "{id?, trigger? {type: onClick|onHover|onPress|onDrag|mouseEnter|mouseLeave|mouseDown|mouseUp|afterDelay {ms}|keyPress {key (a key or a combination: Shift+K, Ctrl+Alt+Delete; or a controller button: Gamepad A|B|X|Y|LB|RB|LT|RT|View|Menu|LS|RS|Up|Down|Left|Right|Home)}|mediaHit {time (seconds: runs once each time the layer's video plays through it)}|mediaEnd (the layer's video reaches its end; a looping one never does)}, action {type: navigate {preserveScroll?}|back|scrollTo {offset? [x, y] (where the layer ends up from the top-left)}|openOverlay {position?, offset? [x, y] (position manual: the overlay's top-left from the top-left of the layer that opens it; without it, right below that layer), close_on_outside? (default true), background?}|swapOverlay|closeOverlay|openUrl {url, newTab? (default true: a new tab; false opens it in the page the prototype runs in, in the web version)}|changeTo|setVariable {variable, value | expression (text, e.g. \"count + 1\")}|setVariableMode {collection, mode}|conditional {blocks [{condition? | expression? (text, e.g. \"count >= 3\"), actions}]}|mediaPlayPause {target? (the video layer; default the layer the interaction is on), mode? (toggle|on|off, default toggle)}|mediaMuteUnmute {target?, mode?} (state only: nothing plays sound)|mediaSkip {target?, seconds? (negative skips backward, default 5)}|mediaSkipTo {target?, time (seconds)}, dest?}, actions? [..], transition? {type: instant|dissolve|smartAnimate|moveIn|moveOut|push|slideIn|slideOut, direction?: left|right|top|bottom}, durationMs?, easing? linear|easeIn|easeOut|easeInOut|easeInBack|easeOutBack|easeInOutBack|gentle|quick|bouncy|slow|{customBezier {x1, y1, x2, y2}}|{customSpring {mass, stiffness, damping}}}, delayMs? (mouse enter, leave, down and up: how long after the gesture the actions run, up to 600000)} — or {id, dest} for a click-navigate. Returns {index}",
             true,
             add
         ),
@@ -290,6 +290,12 @@ pub(crate) fn check_action_dests(cmd: &str, doc: &Document, actions: &[Action]) 
         {
             return Err(bad(cmd, format!("destination {d} doesn't exist")));
         }
+        // A media action's layer: the one it acts on (it may be any layer; only a video plays).
+        if let Some(t) = a.media_target()
+            && !doc.contains(t)
+        {
+            return Err(bad(cmd, format!("media target {t} doesn't exist")));
+        }
     }
     Ok(())
 }
@@ -376,11 +382,20 @@ fn settle(it: &mut Interaction) {
         it.delay_ms = 0;
     }
     it.delay_ms = it.delay_ms.min(MAX_DELAY_MS);
-    walk_mut(&mut it.actions, &mut |a| {
-        if let Action::OpenOverlay { position, offset, .. } = a {
+    if let Trigger::MediaHit { time } = &mut it.trigger {
+        *time = media_time(*time).unwrap_or(0.0);
+    }
+    walk_mut(&mut it.actions, &mut |a| match a {
+        Action::OpenOverlay { position, offset, .. } => {
             *offset =
                 offset.filter(|o| *position == OverlayPosition::Manual && o.iter().all(|c| c.is_finite())).map(|o| o.map(|c| c.clamp(-1e5, 1e5)));
         }
+        // Media times stay within a day; a skip is forward or backward by up to that.
+        Action::MediaSkip { seconds, .. } => {
+            *seconds = if seconds.is_finite() { seconds.clamp(-MAX_MEDIA_SECONDS, MAX_MEDIA_SECONDS) } else { DEFAULT_SKIP };
+        }
+        Action::MediaSkipTo { time, .. } => *time = media_time(*time).unwrap_or(0.0),
+        _ => {}
     });
 }
 

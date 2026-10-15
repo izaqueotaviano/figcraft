@@ -444,6 +444,54 @@ fn one64() -> f64 {
     1.0
 }
 
+fn is_zero64(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// A video paint: the video is referenced by its content hash in the document's asset store (where
+/// images are), and fills the node like an image does. The editor, exports and every screen of a
+/// prototype that isn't playing it show its poster frame; the presenter plays it (sound is not
+/// played: `muted` is state a prototype's actions can change, nothing more).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VideoPaint {
+    pub video: String,
+    /// Fill and Fit; the other modes read as Fill.
+    #[serde(default)]
+    pub scale_mode: ImageScaleMode,
+    /// The picture the editor and exports show: seconds into the video (clamped to it).
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub poster: f64,
+    /// It plays when its screen shows (else it waits for a media action).
+    #[serde(default = "yes")]
+    pub autoplay: bool,
+    /// It starts over when it ends.
+    #[serde(default, rename = "loop")]
+    pub looping: bool,
+    /// It starts muted.
+    #[serde(default)]
+    pub muted: bool,
+}
+
+impl VideoPaint {
+    /// The longest a poster time is (seconds): a day, a video's longest.
+    pub const MAX_POSTER: f64 = 86_400.0;
+
+    pub fn new(video: impl Into<String>) -> Self {
+        Self { video: video.into(), scale_mode: ImageScaleMode::Fill, poster: 0.0, autoplay: true, looping: false, muted: false }
+    }
+
+    /// The poster time as a number that can be used (not negative, finite, within a day).
+    pub fn poster_time(&self) -> f64 {
+        if self.poster.is_finite() { self.poster.clamp(0.0, Self::MAX_POSTER) } else { 0.0 }
+    }
+
+    /// The image paint that lays a picture of the video out in the node (Fill or Fit).
+    pub fn as_image(&self) -> ImagePaint {
+        let scale_mode = if self.scale_mode == ImageScaleMode::Fit { ImageScaleMode::Fit } else { ImageScaleMode::Fill };
+        ImagePaint { image: self.video.clone(), scale_mode, scale: 1.0, rotation: 0, crop: None, filters: ImageFilters::default() }
+    }
+}
+
 /// How pattern tiles are laid out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -537,6 +585,7 @@ pub enum PaintKind {
     Solid { color: Color },
     Gradient(Gradient),
     Image(ImagePaint),
+    Video(VideoPaint),
     Pattern(PatternPaint),
 }
 
@@ -582,6 +631,13 @@ impl Paint {
         }
     }
 
+    /// A video from the asset store (`hash`), filling its node in `mode`.
+    pub fn video(hash: impl Into<String>, mode: ImageScaleMode) -> Self {
+        let mut v = VideoPaint::new(hash);
+        v.scale_mode = mode;
+        Self { kind: PaintKind::Video(v), opacity: 1.0, visible: true, blend: BlendMode::Normal }
+    }
+
     /// Layer `source` (a node id) tiled at its own size.
     pub fn pattern(source: u64) -> Self {
         Self { kind: PaintKind::Pattern(PatternPaint::new(source)), opacity: 1.0, visible: true, blend: BlendMode::Normal }
@@ -606,6 +662,7 @@ impl Paint {
                 GradientKind::Diamond => "Diamond".into(),
             },
             PaintKind::Image(_) => "Image".into(),
+            PaintKind::Video(_) => "Video".into(),
             PaintKind::Pattern(_) => "Pattern".into(),
         }
     }
@@ -615,7 +672,7 @@ impl Paint {
         match &mut self.kind {
             PaintKind::Solid { color } => f(color),
             PaintKind::Gradient(g) => g.stops.iter_mut().for_each(|s| f(&mut s.color)),
-            PaintKind::Image(_) | PaintKind::Pattern(_) => {}
+            PaintKind::Image(_) | PaintKind::Video(_) | PaintKind::Pattern(_) => {}
         }
     }
 
@@ -624,7 +681,7 @@ impl Paint {
         match &self.kind {
             PaintKind::Solid { color } => color.with_alpha(color.a * self.opacity),
             PaintKind::Gradient(g) => g.sample(0.0),
-            PaintKind::Image(_) | PaintKind::Pattern(_) => Color::from_rgb8_const(0xB3, 0xB3, 0xB3),
+            PaintKind::Image(_) | PaintKind::Video(_) | PaintKind::Pattern(_) => Color::from_rgb8_const(0xB3, 0xB3, 0xB3),
         }
     }
 }
@@ -637,3 +694,5 @@ mod pattern_tests;
 mod profile_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod video_tests;

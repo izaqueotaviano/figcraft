@@ -350,6 +350,11 @@ fn every_command_survives_junk_params() {
         // Online files: ids, servers, refreshes, actions and names as junk.
         json!({"file": [1], "server": 7, "refresh": "maybe", "action": "share", "name": {"x": 1}}),
         json!({"file": "../x", "server": "wss://\u{0}", "refresh": true, "action": "unshare", "name": 5}),
+        // Video fills and media interactions as junk.
+        json!({"id": 1, "autoplay": [1], "loop": {"x": 1}, "muted": "maybe", "poster": 1e308, "mode": 5, "index": -1, "video": 3,
+               "trigger": {"type": "mediaHit", "time": "x"}, "action": {"type": "mediaSkip", "seconds": 1e308, "target": "nope"}}),
+        json!({"id": 1, "poster": -1e308, "mode": "fit", "index": 0, "trigger": {"type": "mediaEnd", "time": [1]},
+               "action": {"type": "mediaSkipTo", "time": {"x": 1}, "target": -5}, "actions": [{"type": "mediaPlayPause", "mode": "sideways"}]}),
         // Rotation origins and placing with a tool as junk.
         json!({"tool": [1], "x": 1e308, "y": "NaN", "reset": "maybe", "on": {"x": 1}}),
         json!({"tool": "frame", "x": -1e308, "y": 1e308, "reset": true, "on": "yes"}),

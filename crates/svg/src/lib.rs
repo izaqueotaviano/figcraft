@@ -207,8 +207,6 @@ impl W<'_> {
             }
             PaintKind::Image(img) => {
                 let data = self.doc.images.get(&img.image)?;
-                let pid = self.id("pattern");
-                let iid = self.id("image");
                 // Formats SVG viewers don't show (TIFF, BMP) go in as PNG.
                 let png;
                 let (mime, bytes) = match sniff_mime(&data.bytes) {
@@ -218,25 +216,18 @@ impl W<'_> {
                     }
                     m => (m, data.bytes.as_slice()),
                 };
-                let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-                let t = figcraft_render::paint::image_transform(img, f64::from(data.width), f64::from(data.height), w, h);
-                let m = Affine::new([f64::from(t.sx), f64::from(t.ky), f64::from(t.kx), f64::from(t.sy), f64::from(t.tx), f64::from(t.ty)]);
-                let (pw, ph) = if img.scale_mode == figcraft_color::ImageScaleMode::Tile {
-                    (f64::from(data.width), f64::from(data.height))
-                } else {
-                    (f64::from(data.width) * 4.0, f64::from(data.height) * 4.0)
-                };
-                let _ = write!(
-                    self.defs,
-                    "<pattern id=\"{pid}\" patternUnits=\"userSpaceOnUse\" width=\"{}\" height=\"{}\" patternTransform=\"{}\"><image id=\"{iid}\" width=\"{}\" height=\"{}\" href=\"data:{mime};base64,{b64}\"/></pattern>",
-                    num(pw),
-                    num(ph),
-                    matrix(m),
-                    data.width,
-                    data.height
-                );
-                let op = if p.opacity < 0.999 { format!(" fill-opacity=\"{}\"", num(f64::from(p.opacity))) } else { String::new() };
-                Some(format!("fill=\"url(#{pid})\"{op}{blend}"))
+                Some(self.image_fill(img, (data.width, data.height), mime, bytes, p, (w, h), &blend))
+            }
+            // A video fill is its poster picture, as a PNG.
+            PaintKind::Video(v) => {
+                let pm = figcraft_render::images::video_frame(
+                    &v.video,
+                    self.doc.images.get(&v.video),
+                    v.poster_time(),
+                    figcraft_color::ColorProfile::Srgb,
+                )?;
+                let png = figcraft_render::encode_png(&pm).ok()?;
+                Some(self.image_fill(&v.as_image(), (pm.width(), pm.height()), "image/png", &png, p, (w, h), &blend))
             }
             PaintKind::Pattern(pt) => {
                 let (tiles, cell) = self.pattern_tiles(pt, w, h)?;
@@ -253,6 +244,42 @@ impl W<'_> {
                 Some(format!("fill=\"url(#{pid})\"{op}{blend}"))
             }
         }
+    }
+
+    /// The `fill` attribute of an image paint: a pattern holding the `size`-pixel picture (`bytes`
+    /// in `mime`), laid out as `img` says, on a `w`×`h` box.
+    #[allow(clippy::too_many_arguments)]
+    fn image_fill(
+        &mut self,
+        img: &figcraft_color::ImagePaint,
+        size: (u32, u32),
+        mime: &str,
+        bytes: &[u8],
+        p: &Paint,
+        (w, h): (f64, f64),
+        blend: &str,
+    ) -> String {
+        let pid = self.id("pattern");
+        let iid = self.id("image");
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let t = figcraft_render::paint::image_transform(img, f64::from(size.0), f64::from(size.1), w, h);
+        let m = Affine::new([f64::from(t.sx), f64::from(t.ky), f64::from(t.kx), f64::from(t.sy), f64::from(t.tx), f64::from(t.ty)]);
+        let (pw, ph) = if img.scale_mode == figcraft_color::ImageScaleMode::Tile {
+            (f64::from(size.0), f64::from(size.1))
+        } else {
+            (f64::from(size.0) * 4.0, f64::from(size.1) * 4.0)
+        };
+        let _ = write!(
+            self.defs,
+            "<pattern id=\"{pid}\" patternUnits=\"userSpaceOnUse\" width=\"{}\" height=\"{}\" patternTransform=\"{}\"><image id=\"{iid}\" width=\"{}\" height=\"{}\" href=\"data:{mime};base64,{b64}\"/></pattern>",
+            num(pw),
+            num(ph),
+            matrix(m),
+            size.0,
+            size.1
+        );
+        let op = if p.opacity < 0.999 { format!(" fill-opacity=\"{}\"", num(f64::from(p.opacity))) } else { String::new() };
+        format!("fill=\"url(#{pid})\"{op}{blend}")
     }
 
     /// One cell of pattern `pt` on a `w`×`h` box: the source's vectors at each tile, or (a source
@@ -983,3 +1010,5 @@ mod mask_export_tests;
 mod raster_fx_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod video_tests;

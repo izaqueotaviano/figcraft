@@ -160,6 +160,20 @@ pub fn prepare_at(paint: &Paint, w: f64, h: f64, scale: f64, doc: &Document, tim
             let transform = Transform::from_translate(-1.0, -1.0).post_concat(transform);
             Some(Prepared::Pattern { pixmap: padded, mode: SpreadMode::Pad, quality: FilterQuality::Bicubic, opacity: op, transform })
         }
+        // A video shows its poster picture (the presenter sets it to the moment it plays).
+        PaintKind::Video(v) => {
+            let pm = crate::images::video_frame(&v.video, doc.images.get(&v.video), v.poster_time(), doc.color_profile)?;
+            let img = v.as_image();
+            let transform = image_transform(&img, f64::from(pm.width()), f64::from(pm.height()), w, h);
+            if covers_box(&img, f64::from(pm.width()), f64::from(pm.height()), w, h) {
+                return Some(Prepared::Pattern { pixmap: pm, mode: SpreadMode::Pad, quality: FilterQuality::Bicubic, opacity: op, transform });
+            }
+            // Fit: a transparent 1-px border so Pad spreads transparency, not edge pixels (every
+            // picture is shown once or few times: not worth caching padded).
+            let padded = Arc::new(crate::images::pad(&pm)?);
+            let transform = Transform::from_translate(-1.0, -1.0).post_concat(transform);
+            Some(Prepared::Pattern { pixmap: padded, mode: SpreadMode::Pad, quality: FilterQuality::Bicubic, opacity: op, transform })
+        }
         PaintKind::Pattern(pt) => crate::pattern::prepare(doc, pt, w, h, scale, time, op),
     }
 }

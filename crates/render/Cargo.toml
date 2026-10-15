@@ -14,6 +14,7 @@ figcraft-color = { workspace = true }
 figcraft-doc = { workspace = true }
 figcraft-text = { workspace = true }
 figcraft-pathops = { workspace = true }
+figcraft-media = { workspace = true }
 tiny-skia = { workspace = true }
 image = { workspace = true }
 moxcms = { workspace = true }
@@ -23,3 +24,6 @@ log = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = "1"
+
+[dev-dependencies]
+figcraft-media = { workspace = true, features = ["testing"] }

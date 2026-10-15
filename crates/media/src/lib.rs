@@ -94,6 +94,12 @@ pub enum Container {
 }
 
 impl Container {
+    /// Whether this is a video file layout (rather than an animated image format): placing one
+    /// makes a video layer without being asked.
+    pub fn is_video(self) -> bool {
+        matches!(self, Container::Avi | Container::Mp4 | Container::Mov | Container::Matroska | Container::Synthetic)
+    }
+
     /// The layout's name, for messages.
     pub fn label(self) -> &'static str {
         match self {

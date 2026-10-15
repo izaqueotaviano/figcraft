@@ -198,7 +198,7 @@ fn first_fill(n: &Node) -> Option<Color> {
     n.fills.iter().filter(|p| p.visible).find_map(|p| match &p.kind {
         PaintKind::Solid { color } => Some(color.with_alpha(color.a * p.opacity)),
         PaintKind::Gradient(g) => g.sorted_stops().first().map(|s| s.color),
-        PaintKind::Image(_) | PaintKind::Pattern(_) => None,
+        PaintKind::Image(_) | PaintKind::Video(_) | PaintKind::Pattern(_) => None,
     })
 }
 
@@ -399,6 +399,11 @@ pub(crate) fn css_decls(doc: &Document, n: &Node, t: &mut Tokens, hug: (bool, bo
             }
             PaintKind::Gradient(g) => put("background", css_gradient(g, n.width, n.height)),
             PaintKind::Image(_) => put("background", "url(image.png) center / cover".into()),
+            // The poster picture; the video itself is its own file.
+            PaintKind::Video(v) => {
+                let fit = if v.scale_mode == figcraft_color::ImageScaleMode::Fit { "contain" } else { "cover" };
+                put("background", format!("url(poster.png) center / {fit}"));
+            }
             PaintKind::Pattern(_) => put("background", "url(pattern.png) repeat".into()),
         }
     }

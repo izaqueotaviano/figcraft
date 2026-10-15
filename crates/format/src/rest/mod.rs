@@ -28,6 +28,8 @@ mod effects_tests;
 mod gamepad_tests;
 #[cfg(test)]
 mod link_tests;
+#[cfg(test)]
+mod media_tests;
 pub(crate) mod props;
 pub(crate) mod proto;
 #[cfg(test)]

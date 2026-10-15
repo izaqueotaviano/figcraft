@@ -79,7 +79,7 @@ pub fn specs() -> Vec<CommandSpec> {
         spec!(
             "image.place",
             "Place image",
-            "{data (base64) | path, x?, y?, width?, height?, parent?, mode? (fill|fit|crop|tile)} → {id, image, width, height, imageProfile (its embedded colour profile; null: taken as sRGB)}",
+            "{data (base64) | path, x?, y?, width?, height?, parent?, mode? (fill|fit|crop|tile), video? (true places a GIF, WebP or PNG animation as a video fill that prototype actions control; AVI, MOV and MP4 videos always are), autoplay?, loop?, muted?, poster? (video fills: see video.set)} → {id, image, width, height, imageProfile (its embedded colour profile; null: taken as sRGB)}; a video gives {id, video (the file's hash), width, height (the layer's), pixelWidth, pixelHeight, container, codec, kind, duration, frames, frameRate, hasAudio}. Videos open only as Motion-JPEG (AVI, MOV, MP4) or an animated GIF/WebP/PNG; any other codec is refused by name and nothing is kept",
             true,
             place_image
         ),
@@ -321,7 +321,8 @@ fn read_path(path: &str) -> Result<Vec<u8>> {
     Err(EngineError::Other(format!("{path}: files can't be read in the browser")))
 }
 
-/// Place an image as a rectangle with an image fill (Figma's image layer).
+/// Place an image as a rectangle with an image fill (Figma's image layer); a video (or, with
+/// `video: true`, an animated image) as one with a video fill.
 pub fn place_image(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "image.place";
     let bytes = if let Some(b64) = string(p, "data") {
@@ -333,30 +334,60 @@ pub fn place_image(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad(cmd, "pass `data` (base64) or `path`"));
     };
+    place_bytes(s, cmd, bytes, p)
+}
+
+/// Place encoded `bytes` (a picture, or a video file) as a rectangle in the document. The params
+/// are those of `image.place`.
+pub fn place_bytes(s: &mut Session, cmd: &str, bytes: Vec<u8>, p: &Value) -> Result<Value> {
     let mode = match string(p, "mode").unwrap_or_default().to_ascii_lowercase().as_str() {
         "fit" => ImageScaleMode::Fit,
         "crop" => ImageScaleMode::Crop,
         "tile" => ImageScaleMode::Tile,
         _ => ImageScaleMode::Fill,
     };
+    // Video files are layers with a video fill; animated GIF, WebP and PNG stay pictures (which
+    // animate by themselves) unless asked to be videos, so a prototype can control them.
+    let as_video = boolean(p, "video").unwrap_or_else(|| figcraft_media::sniff(&bytes).is_some_and(figcraft_media::Container::is_video));
     let page = s.page()?;
     let parent = id(p, "parent").unwrap_or(page);
     let ds = s.ds_mut()?;
     let doc = ds.doc_mut();
-    let (hash, iw, ih) = figcraft_format::add_image(doc, bytes).map_err(|e| bad(cmd, e.to_string()))?;
-    let profile = figcraft_render::images::profile_name(&hash, doc.images.get(&hash));
+    let (hash, iw, ih, video, profile) = if as_video {
+        let (hash, info) = super::video::add_video(doc, bytes)?;
+        (hash, info.width, info.height, Some(info), None)
+    } else {
+        let (hash, iw, ih) = figcraft_format::add_image(doc, bytes).map_err(|e| bad(cmd, e.to_string()))?;
+        let profile = figcraft_render::images::profile_name(&hash, doc.images.get(&hash));
+        (hash, iw, ih, None, profile)
+    };
     let (iw, ih) = (f64::from(iw), f64::from(ih));
     // Fit large images into 1000 px like Figma does when placing.
     let k = (1000.0 / iw.max(ih)).min(1.0);
     let w = num(p, "width").unwrap_or(iw * k);
     let h = num(p, "height").unwrap_or(if num(p, "width").is_some() { w * ih / iw.max(1.0) } else { ih * k });
     let nid = doc.alloc_id();
-    let name = string(p, "name").unwrap_or_else(|| "Image".into());
+    let name = string(p, "name").unwrap_or_else(|| if video.is_some() { "Video" } else { "Image" }.into());
     let mut node = Node::new(nid, NodeKind::Rectangle, name, w, h);
     node.transform = figcraft_geom::Affine::translate((num_or(p, "x", 0.0), num_or(p, "y", 0.0)));
-    node.fills = vec![Paint::image(hash.clone(), mode)];
+    node.fills = vec![match &video {
+        Some(info) => super::video::paint_from_params(&hash, p, info.duration),
+        None => Paint::image(hash.clone(), mode),
+    }];
     doc.insert(node, parent, None)?;
     ds.selection = vec![nid];
     let _ = ok;
-    Ok(json!({"id": nid, "image": hash, "width": w, "height": h, "imageProfile": profile}))
+    Ok(match video {
+        Some(info) => {
+            let mut out = json!({"id": nid, "video": hash, "width": w, "height": h});
+            if let (Some(o), Value::Object(extra)) = (out.as_object_mut(), super::video::info_json(&info)) {
+                // The picture size is the file's; width and height are the layer's.
+                o.extend(extra.into_iter().filter(|(k, _)| k != "width" && k != "height"));
+                o.insert("pixelWidth".into(), json!(info.width));
+                o.insert("pixelHeight".into(), json!(info.height));
+            }
+            out
+        }
+        None => json!({"id": nid, "image": hash, "width": w, "height": h, "imageProfile": profile}),
+    })
 }
