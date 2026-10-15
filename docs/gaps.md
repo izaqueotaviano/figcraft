@@ -1,6 +1,6 @@
 # Where FigCraft falls short of Figma
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (smoother canvas panning and zooming; main menu items greyed with a reason or asking for their value instead of doing nothing; `.fig` export: instance sizes, variables with modes, shared styles, variable-width strokes; sharing with a join code; text box sizes measured against documents re-saved by other software; live sessions per document; .fig export checked by opening written files in other software; experimental .fig export; keyboard shortcut parity suite and bindings; Simplified Chinese draft catalog; Latin American Spanish overlay; prototyping tail: gamepad triggers, widgets in prototypes, mode lookups; plugin directory on figcraft-server; Japanese and Korean draft catalogs and CJK UI fonts; plugin widgets and the plugin panel tail; French, German and Brazilian Portuguese draft catalogs; cursor chat and spotlight in live sessions; layers and assets panels behaviour suite and fixes; vector multi-edit and edit tail; dev resources links; extended collections tail; branch version history and finer list merges; comments and version history behaviour suite and fixes; canvas navigation, guides and grids behaviour suite and fixes; `.fig` import: editable vector networks, more layer kinds, variable prototype actions; `.fig` import, best effort: gap 1 down to its tail; Windows QA pass: everyday workflows on Windows 11, eight fixes incl. unsaved work kept after a crash or a forced quit; Display P3: gamut warning and soft-proof (true P3 blocked upstream); several windows; localization layer with a draft Spanish catalog; hosting figcraft-server: wss in the desktop app, server releases, deployment guide; plugin panels and settings; canvas fixes: boolean hit testing on the result, group drags, frame outlines and slices; code connect; stretch and scatter brushes, pen pressure; text on a path and pattern fills; team libraries on the server and swap library; branches: create, update from main, review and merge; animated GIF fills and TIFF images; Open recent, outlines for the selection and mask outlines: menu breadth 100%; extended collections, variables import/export, gradient stop and variant bindings: gap 14 down to its tail) · **Target:** Figma Design (desktop app 126.10.7)
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (smoother canvas panning and zooming; main menu items greyed with a reason or asking for their value instead of doing nothing; video fills and media in prototypes: Motion-JPEG video and animated images play, other codecs are refused by name, media triggers and actions; `.fig` export: instance sizes, variables with modes, shared styles, variable-width strokes; sharing with a join code; text box sizes measured against documents re-saved by other software; live sessions per document; .fig export checked by opening written files in other software; experimental .fig export; keyboard shortcut parity suite and bindings; Simplified Chinese draft catalog; Latin American Spanish overlay; prototyping tail: gamepad triggers, widgets in prototypes, mode lookups; plugin directory on figcraft-server; Japanese and Korean draft catalogs and CJK UI fonts; plugin widgets and the plugin panel tail; French, German and Brazilian Portuguese draft catalogs; cursor chat and spotlight in live sessions; layers and assets panels behaviour suite and fixes; vector multi-edit and edit tail; dev resources links; extended collections tail; branch version history and finer list merges; comments and version history behaviour suite and fixes; canvas navigation, guides and grids behaviour suite and fixes; `.fig` import: editable vector networks, more layer kinds, variable prototype actions; `.fig` import, best effort: gap 1 down to its tail; Windows QA pass: everyday workflows on Windows 11, eight fixes incl. unsaved work kept after a crash or a forced quit; Display P3: gamut warning and soft-proof (true P3 blocked upstream); several windows; localization layer with a draft Spanish catalog; hosting figcraft-server: wss in the desktop app, server releases, deployment guide; plugin panels and settings; canvas fixes: boolean hit testing on the result, group drags, frame outlines and slices; code connect; stretch and scatter brushes, pen pressure; text on a path and pattern fills; team libraries on the server and swap library; branches: create, update from main, review and merge; animated GIF fills and TIFF images; Open recent, outlines for the selection and mask outlines: menu breadth 100%; extended collections, variables import/export, gradient stop and variant bindings: gap 14 down to its tail) · **Target:** Figma Design (desktop app 126.10.7)
 
 Every known shortfall against Figma, one entry each, ranked by how much it stops a Figma user from
 doing real work in FigCraft. Agents: pick work from the top unless the owner says otherwise. The
@@ -25,10 +25,10 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 | 9 | Figma Draw: pen pressure on macOS/Linux tablets (multi-edit, brushes, pressure, text on a path and pattern fills landed) | Feature | 1–3 | [target-app-parity](target-app-parity.md) |
 | 10 | Team libraries: no team-wide lists or accounts; analytics are counts | Feature | 4–8 | [components-parity](components-parity.md) |
 | 11 | Spell check | Feature | 4–8 | [target-app-parity](target-app-parity.md) |
-| 12 | Video fills; HEIC images | File format | 5–10 | [file-format-parity](file-format-parity.md) |
+| 12 | Video decoders beyond Motion-JPEG and animated images (H.264, HEVC, VP9, AV1; video fills, media triggers and actions landed 2026-10-15); HEIC images | File format | 5–10 | [file-format-parity](file-format-parity.md) |
 | 13 | Vector tail: none left (boolean hit testing on the result landed 2026-10-11) | Feature | — | [target-app-parity](target-app-parity.md) |
 | 14 | Variables: extended collections checked on real libraries (the tail landed 2026-10-12) | Feature | 0–1 | [components-parity](components-parity.md) |
-| 15 | Prototyping: media triggers and actions; controllers on macOS, Linux and FreeBSD (controller buttons on key/gamepad triggers, widgets in prototypes landed) | Feature | 2–5 | [prototyping-parity](prototyping-parity.md) |
+| 15 | Prototyping: controllers on macOS, Linux and FreeBSD, real prototype QA (media triggers and actions, controller buttons on key/gamepad triggers, widgets in prototypes landed) | Feature | 2–5 | [prototyping-parity](prototyping-parity.md) |
 | 16 | Dev Mode: import lines inside generated layer trees; the editor extension is left to the MCP server (code connect, Dev Mode plugins and dev resources landed) | Feature | 0–1 | [dev-mode-parity](dev-mode-parity.md) |
 | 17 | Branching: branches in live sessions, lists other than fills, strokes and effects merged whole (a branch's own version history and per-item list merges landed 2026-10-12) | Feature | 1–2 | [collaboration-parity](collaboration-parity.md) |
 | 18 | Display P3 on screen: blocked upstream (egui-wgpu picks an 8-bit sRGB surface); gamut warning and soft-proof sRGB landed, as did several windows | Hardware | 4–8 | [hardware-parity](hardware-parity.md) |
@@ -251,13 +251,22 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 - **Estimate:** 4–8 h with a permissively licensed dictionary and checker (provenance per
   `ATTRIBUTION.md`).
 
-### 12. Video fills; HEIC images
+### 12. Video decoders beyond Motion-JPEG and animated images; HEIC images
+- **Landed (2026-10-15):** video fills (`PaintKind::Video`, the file kept by content hash with the
+  images) and `crates/media`: Motion-JPEG in AVI, MOV and MP4 and animated GIF, WebP and PNG open
+  and play in the presenter and the preview (no sound); every other codec is refused by name ("This
+  video codec isn't supported yet: H.264 (avc1)") and the file is not kept; the canvas and the
+  exports show the poster picture. See [Supported video](prototyping-parity.md#supported-video).
 - **Landed (2026-10-11):** animated GIF fills (the file kept as is, the first frame on the canvas
   and in exports, played in the presenter and the preview) and TIFF images.
 - **Missing:** Figma takes JPG, PNG, HEIC, WebP, GIF and TIFF images and MP4, MOV and WebM video
-  (help center, checked 2026-10-10). FigCraft decodes PNG, JPEG, WebP, GIF, TIFF and BMP; HEIC and
-  video need decoders that are C libraries (libheif, FFmpeg) or each platform's media framework.
-- **Estimate:** 5–10 h (video playback in the presenter is most of it; it can reuse the GIF clock).
+  (help center, checked 2026-10-10). FigCraft decodes PNG, JPEG, WebP, GIF, TIFF and BMP, and
+  video only as Motion-JPEG or animations: the H.264, HEVC, VP9 and AV1 video that MP4, MOV and
+  WebM files nearly always hold, and HEIC, need decoders that are C libraries (libheif, FFmpeg) or
+  each platform's media framework (an owner decision), or a large pure-Rust decoder each.
+  Sound is not played either. Fragmented MP4 is refused.
+- **Estimate:** 5–10 h with a decoder library or the platform frameworks (player, containers and
+  fills are done; what is left is decoding, audio output and HEIC).
 
 ### 13. Vector tail: none left
 - **Landed (2026-10-12):** several Bezier handles selected with Shift-click and dragged together,
@@ -292,7 +301,15 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   offered (extending takes library collections).
 - **Estimate:** 0–1 h.
 
-### 15. Prototyping: media triggers and actions, controllers off Windows
+### 15. Prototyping: controllers off Windows, real prototype QA
+- **Landed (2026-10-15):** media in prototypes: the "On media hit" (with a time) and "On media end"
+  triggers and the play/pause, mute/unmute, skip forward/backward and skip-to-time actions (model,
+  interaction editor, commands, REST import instead of skipping them, the player). Videos play by
+  the player's own time, start again each time their screen appears, fire hits and ends once per
+  crossing, and the window draws frames only while one plays, rendering again just the video's area
+  (`crates/ui-egui/src/present_media_tests.rs`, `crates/media/src/clock_tests.rs`,
+  `crates/engine/src/video_tests.rs`, `crates/format/src/rest/media_tests.rs`). What plays is
+  limited by the decoders (gap 12).
 - **Landed (2026-10-12):** key/gamepad triggers take controller buttons (`Gamepad A` … `Gamepad
   Home`, the standard layout's 17 buttons; a Controller menu beside the key field; REST files'
   controller triggers import); the player reads controllers on Windows and in the browser (Gamepad
@@ -300,11 +317,10 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   presented prototype, on the prototype's own copy; `proto.evaluate` computes expressions (mode
   lookups included) where a layer's interaction would run (`crates/engine/src/proto_tail_tests.rs`,
   `crates/ui-egui/src/present_tail_tests.rs`, `crates/format/src/rest/gamepad_tests.rs`).
-- **Missing:** video triggers (on media hit/end) and play/pause/mute/seek actions (the REST
-  importer warns and skips them, `crates/format/src/rest/proto.rs`); controllers on macOS, Linux
-  and FreeBSD (the usual Rust controller library links libudev on Linux; a pure-Rust reader per
-  platform, or an owner decision on that dependency); PlayStation and Switch button labels.
-- **Estimate:** 2–5 h, the media part after video fills (gap 12).
+- **Missing:** controllers on macOS, Linux and FreeBSD (the usual Rust controller library links
+  libudev on Linux; a pure-Rust reader per platform, or an owner decision on that dependency);
+  PlayStation and Switch button labels; checks on real prototypes (including ones with video).
+- **Estimate:** 2–5 h (controllers off Windows 1–2 h, real prototype QA 1–3 h).
 
 ### 16. Dev Mode: the tail after dev resources
 - **Landed (2026-10-11):** code connect: a component or set links to its code component per
@@ -397,6 +413,7 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-15 | minor | Gap 7 evidence: canvas panning reuses an overscan render (no bare strip of page background while scrolling; 300 scroll frames now 26 renders and a fifth of the texture uploads), zooming renders half-resolution drafts, and view changes no longer rebuild the panels' caches. Gap 4: main menu items that can't act are greyed with the reason; items that need a value ask for it. Ranks and hours unchanged |
+| 2026-10-15 | minor | Gaps 12 and 15: video fills, `crates/media` (Motion-JPEG in AVI, MOV and MP4, animated GIF, WebP and PNG; every other codec refused by name; no sound) and the media triggers and actions in prototypes landed. Gap 12 is now the decoders (H.264, HEVC, VP9, AV1) and HEIC, 5–10 h unchanged (it assumed a decoder library); gap 15 is controllers off Windows and real prototype QA, 2–5 h unchanged. Ranking unchanged |
 | 2026-10-13 | minor | Gap 1: the experimental `.fig` export writes instance sizes (resized, filling an auto layout, scaled), variables with modes and bindings, shared styles and variable-width strokes, and the import reads them back. Checked by opening written files in other software: resized and scaled instances keep their size and lay their layers out for it, variables with their modes and colour bindings resolve there (a frame set to another mode shows that mode's colours, also inside instances), colour, text, effect and grid styles are listed, and variable-width strokes that are the same on both sides of the path draw with their width; number, string and boolean bindings and bindings on effects, layout guides and gradient stops come across as the values they give but did not show as bound there (their entries now also name the layer field they set, not yet checked there), and strokes wider on one side of the path are written as filled outlines, no longer editable strokes there (the stroke itself is kept as plugin data and our own import puts it back; not yet checked there). Hours and the ranking unchanged |
 | 2026-10-12 | minor | Gap 2: your online files landed (the app records the files it put on a server with their owner tokens, Home ▸ Online lists them and opens them again as their owner, with sharing, rename, removal and forget from the list; one request per server tells which are still there; tabs mark files in a live session). What is left is unchanged: accounts, teams and per-person permissions, shared comments and versions. Hours unchanged |
 | 2026-10-12 | minor | Gap 2: sharing with a join code (Share ▸ Online or Local network, one Start sharing button, a short code to give others, one join field for a code or a link; the server names links with codes and limits wrong ones) added to the landed list; usability, so the estimate and ranking are unchanged |

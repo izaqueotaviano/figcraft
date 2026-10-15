@@ -15,6 +15,9 @@ use crate::icons::{self, Icon};
 use crate::theme::{Tokens, doc_c32, regular, semibold};
 use crate::widgets;
 
+#[path = "video_ui.rs"]
+mod video;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum PickerTarget {
     PageBackground,
@@ -189,7 +192,7 @@ fn set_color(app: &mut FigApp, target: &PickerTarget, paint: &mut Paint, c: Colo
                 s.color = c;
             }
         }
-        PaintKind::Image(_) | PaintKind::Pattern(_) => return,
+        PaintKind::Image(_) | PaintKind::Video(_) | PaintKind::Pattern(_) => return,
     }
     write(app, target, paint, false);
 }
@@ -436,7 +439,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
                 target,
                 PickerTarget::Effect { .. } | PickerTarget::PageBackground | PickerTarget::Variable { .. } | PickerTarget::PluginField { .. }
             ) {
-                let kinds = [
+                let mut kinds = vec![
                     (Icon::Fill, tr("Solid")),
                     (Icon::LayoutH, tr("Linear")),
                     (Icon::Ellipse, tr("Radial")),
@@ -445,6 +448,11 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
                     (Icon::Image, tr("Image")),
                     (Icon::ViewGrid, tr("Pattern")),
                 ];
+                // Only a layer's fills play video.
+                if matches!(target, PickerTarget::Paint { fills: true, .. }) || matches!(paint.kind, PaintKind::Video(_)) {
+                    kinds.push((Icon::Play, tr("Video")));
+                }
+                let cell = if kinds.len() > 7 { 26.0 } else { 30.0 };
                 let active = match &paint.kind {
                     PaintKind::Solid { .. } => 0,
                     PaintKind::Gradient(g) => match g.kind {
@@ -455,10 +463,11 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
                     },
                     PaintKind::Image(_) => 5,
                     PaintKind::Pattern(_) => 6,
+                    PaintKind::Video(_) => 7,
                 };
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
-                    if let Some(i) = widgets::segmented(ui, &kinds, Some(active), 30.0) {
+                    if let Some(i) = widgets::segmented(ui, &kinds, Some(active), cell) {
                         let base = paint.preview_color();
                         paint.kind = match i {
                             0 => PaintKind::Solid { color: base.with_alpha(1.0) },
@@ -478,6 +487,10 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
                                     None => paint.kind.clone(),
                                 }
                             }
+                            7 => match video::choose(app) {
+                                Some(v) => PaintKind::Video(v),
+                                None => paint.kind.clone(),
+                            },
                             6 => match pattern_sources(app, &target).first() {
                                 Some((id, _)) => Paint::pattern(id.0).kind,
                                 None => {
@@ -703,6 +716,9 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
             if let PaintKind::Pattern(pt) = paint.kind.clone() {
                 pattern_controls(app, ui, &target, &mut paint, pt);
             }
+            if let PaintKind::Video(v) = paint.kind.clone() {
+                video::controls(app, ui, &target, &mut paint, &v);
+            }
             if let Some(color) = edit_color {
                 let mut hsb = ui
                     .data(|d| d.get_temp::<(f32, f32, f32, [u8; 4])>(Id::new("cp_hsb")))
@@ -767,7 +783,7 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
                                 s.color = nc;
                             }
                         }
-                        PaintKind::Image(_) | PaintKind::Pattern(_) => {}
+                        PaintKind::Image(_) | PaintKind::Video(_) | PaintKind::Pattern(_) => {}
                     }
                     write(app, &target, &paint, !done);
                 }

@@ -20,6 +20,7 @@ figcraft-render = { workspace = true }
 figcraft-format = { workspace = true }
 figcraft-svg = { workspace = true }
 figcraft-pdf = { workspace = true }
+figcraft-media = { workspace = true }
 figcraft-plugin = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,5 +31,6 @@ regex = { workspace = true }
 web-time = "1.1.0"
 
 [dev-dependencies]
+figcraft-media = { workspace = true, features = ["testing"] }
 wat = { workspace = true }
 image = { workspace = true }

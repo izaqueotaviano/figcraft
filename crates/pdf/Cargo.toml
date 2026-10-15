@@ -21,4 +21,5 @@ thiserror = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+figcraft-media = { workspace = true, features = ["testing"] }
 flate2 = "1"

@@ -19,3 +19,6 @@ usvg = { workspace = true }
 base64 = { workspace = true }
 flate2 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+figcraft-media = { workspace = true, features = ["testing"] }

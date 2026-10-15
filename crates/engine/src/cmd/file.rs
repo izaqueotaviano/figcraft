@@ -497,6 +497,15 @@ fn load_with(
                 .notes;
             Ok((figcraft_format::Loaded { issues: notes, ..doc.into() }, false))
         }
+        // A video file opens as a document with one video layer.
+        "avi" | "mov" | "mp4" | "m4v" | "webm" | "mkv" => {
+            let mut doc = Document::new(file_stem(name_hint));
+            let page = doc.first_page().ok_or(EngineError::NoDocument)?;
+            let (hash, info) = super::video::add_video(&mut doc, bytes.to_vec())?;
+            let id = doc.create(page, NodeKind::Rectangle, "Video", 0.0, 0.0, f64::from(info.width), f64::from(info.height))?;
+            doc.get_mut(id)?.fills = vec![super::video::paint_from_params(&hash, &json!({}), info.duration)];
+            Ok((doc.into(), false))
+        }
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" => {
             let mut doc = Document::new(file_stem(name_hint));
             let page = doc.first_page().ok_or(EngineError::NoDocument)?;
@@ -1154,10 +1163,13 @@ fn import(s: &mut Session, p: &Value) -> Result<Value> {
             }
             Ok(out)
         }
-        _ => {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            super::create::place_image(s, &json!({"data": b64, "x": x.unwrap_or(center.0), "y": y.unwrap_or(center.1), "name": file_stem(&name)}))
-        }
+        // A picture, or a video file: the bytes are used as they are (a video can be large).
+        _ => super::create::place_bytes(
+            s,
+            "file.import",
+            bytes,
+            &json!({"x": x.unwrap_or(center.0), "y": y.unwrap_or(center.1), "name": file_stem(&name)}),
+        ),
     }
 }
 

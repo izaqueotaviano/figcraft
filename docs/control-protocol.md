@@ -104,7 +104,10 @@ far the view is panned (`pan`, `panRange`), whether a scroll is still coasting (
 active screen's `hotspots` (`[{id, rect: [x0, y0, x1, y1]}]` in window points, bottom-most first),
 whether a click where nothing reacts flashes them (`hotspotHints`) and they are flashing now
 (`hotspotFlash`), and whether the Inspect panel shows (`inspect`) with the layer it shows
-(`inspected`) (`null` when nothing plays). `presentOptions` holds the options the next presentation
+(`inspected`) (`null` when nothing plays). `media` holds the videos playing on the screen and in
+the open overlays (`videos`: `[{id, playing, ended, muted, looping, position, duration, frame,
+frames}]`, seconds and picture indexes), and how many times a screen's texture was rendered whole
+with a video in it (`renders`) or only a moving video's area was patched in (`patches`). `presentOptions` holds the options the next presentation
 starts with (`scale`, `deviceFrame`, `comments`, `hotspotHints`, `inspect`).
 `textPreview` is true while a live text preview shows on the canvas (a hovered text style or named
 instance, a dragged axis slider; see `text.preview` in [mcp.md](mcp.md)).

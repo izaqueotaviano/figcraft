@@ -205,11 +205,20 @@ pub fn add_image(doc: &mut Document, bytes: Vec<u8>) -> Result<(String, u32, u32
     Ok((hash, w, h))
 }
 
-/// Image bytes with their pixel size (0×0 when they can't be decoded).
+/// Image (or video file) bytes with their pixel size (0×0 when they can't be decoded).
 pub(crate) fn image_data(data: Vec<u8>) -> ImageData {
-    let (w, h) =
-        image::ImageReader::new(std::io::Cursor::new(&data)).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok()).unwrap_or((0, 0));
-    ImageData { bytes: Arc::new(data), width: w, height: h }
+    let bytes = Arc::new(data);
+    let still = image::ImageReader::new(std::io::Cursor::new(bytes.as_slice())).with_guessed_format().ok().and_then(|r| r.into_dimensions().ok());
+    let (w, h) = still.or_else(|| video_size(&bytes)).unwrap_or((0, 0));
+    ImageData { bytes, width: w, height: h }
+}
+
+/// The picture size of a video file (AVI, MP4, MOV) that opens here; `None` for anything else.
+fn video_size(bytes: &Arc<Vec<u8>>) -> Option<(u32, u32)> {
+    if !figcraft_media::sniff(bytes)?.is_video() {
+        return None;
+    }
+    figcraft_media::Media::open(bytes.clone()).ok().map(|m| (m.info().width, m.info().height))
 }
 
 /// `document.json`: the format header, the image index and the document's own fields, written

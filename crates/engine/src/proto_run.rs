@@ -180,7 +180,8 @@ pub fn hotspots(doc: &Document, root: NodeId) -> Vec<(NodeId, Rect)> {
             (c, _) => c,
         };
         clips.insert(id, own);
-        if n.interactions.is_empty() {
+        // (Layers whose interactions all follow their video, not the pointer, can't be clicked.)
+        if n.interactions.iter().all(|it| it.trigger.is_media()) {
             continue;
         }
         let Some(b) = bounds else { continue };

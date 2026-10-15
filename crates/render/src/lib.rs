@@ -286,6 +286,12 @@ pub fn render_area(doc: &Document, ids: &[NodeId], b: Rect, scale: f64) -> Optio
     area_at(doc, ids, b, scale, 0.0)
 }
 
+/// [`render_area`] `time` seconds into animated GIFs (the presenter plays them): the presenter
+/// renders again just the part of a screen a playing video covers.
+pub fn render_area_at(doc: &Document, ids: &[NodeId], b: Rect, scale: f64, time: f64) -> Option<Pixmap> {
+    area_at(doc, ids, b, scale, time)
+}
+
 fn area_at(doc: &Document, ids: &[NodeId], b: Rect, scale: f64, time: f64) -> Option<Pixmap> {
     let scale = if scale.is_finite() && scale > 0.0 { scale.min(64.0) } else { 1.0 };
     let w = (b.width() * scale - 1e-6).ceil().max(1.0);
@@ -461,5 +467,7 @@ mod solo_tests;
 mod spread_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod video_tests;
 #[cfg(test)]
 mod width_tests;

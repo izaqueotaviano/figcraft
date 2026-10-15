@@ -33,6 +33,13 @@ pub enum Trigger {
     KeyPress {
         key: String,
     },
+    /// "On media hit": the layer's video plays through `time` seconds.
+    MediaHit {
+        #[serde(default)]
+        time: f64,
+    },
+    /// "On media end": the layer's video plays to its end (a video that loops never ends).
+    MediaEnd,
 }
 
 impl Trigger {
@@ -50,7 +57,14 @@ impl Trigger {
             // A controller button names itself ("Gamepad A").
             Trigger::KeyPress { key } if is_gamepad_button(key) => key.clone(),
             Trigger::KeyPress { key } => format!("Key/Gamepad {key}"),
+            Trigger::MediaHit { time } => format!("On media hit {}s", seconds_text(*time)),
+            Trigger::MediaEnd => "On media end".into(),
         }
+    }
+
+    /// Whether this is one of the media triggers (the layer's video decides when they fire).
+    pub fn is_media(&self) -> bool {
+        matches!(self, Trigger::MediaHit { .. } | Trigger::MediaEnd)
     }
 
     /// A key trigger fires for the key named `key` (`Space`, `K`, `ArrowLeft`) pressed with
@@ -61,6 +75,23 @@ impl Trigger {
         let (m, k) = KeyMods::split(want);
         m == mods && (k.eq_ignore_ascii_case(key) || key_alias(k) == Some(key))
     }
+}
+
+/// A time in seconds as people write it: at most two decimals, without trailing zeros ("1.5", "30").
+pub fn seconds_text(t: f64) -> String {
+    if !t.is_finite() {
+        return "0".into();
+    }
+    let s = format!("{:.2}", t.clamp(-MAX_MEDIA_SECONDS, MAX_MEDIA_SECONDS));
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// The longest time a media trigger or action names (seconds): a day, the longest video there is.
+pub const MAX_MEDIA_SECONDS: f64 = 86_400.0;
+
+/// A media time from a command or file value: finite, within `0 ..= MAX_MEDIA_SECONDS`.
+pub fn media_time(v: f64) -> Option<f64> {
+    v.is_finite().then(|| v.clamp(0.0, MAX_MEDIA_SECONDS))
 }
 
 /// The modifier keys of a key combination.
@@ -545,6 +576,11 @@ pub enum Action {
     CloseOverlay,
     OpenUrl {
         url: String,
+        /// Open the link in a new browser tab (the default, and what files without the field
+        /// mean). Off: the link replaces the page the prototype runs in, in the web version; the
+        /// desktop app always opens the system browser.
+        #[serde(default = "crate::node::yes", alias = "newTab", alias = "openInNewTab", skip_serializing_if = "is_true")]
+        new_tab: bool,
     },
     /// Change an instance to another variant (interactive components).
     ChangeTo {
@@ -567,6 +603,72 @@ pub enum Action {
     Conditional {
         blocks: Vec<ConditionalBlock>,
     },
+    /// Play / pause media: a video layer's playing (`target`: the layer; none: the one the
+    /// interaction is on).
+    MediaPlayPause {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<NodeId>,
+        #[serde(default, skip_serializing_if = "MediaToggle::is_toggle")]
+        mode: MediaToggle,
+    },
+    /// Mute / unmute media: a video layer's sound (state only: nothing plays sound).
+    MediaMuteUnmute {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<NodeId>,
+        #[serde(default, skip_serializing_if = "MediaToggle::is_toggle")]
+        mode: MediaToggle,
+    },
+    /// Skip forward (positive) or backward (negative) media by `seconds`.
+    MediaSkip {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<NodeId>,
+        #[serde(default = "default_skip")]
+        seconds: f64,
+    },
+    /// Skip to media time: a video layer's position, `time` seconds in.
+    MediaSkipTo {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<NodeId>,
+        #[serde(default)]
+        time: f64,
+    },
+}
+
+/// What a play / pause or mute / unmute action does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaToggle {
+    /// Play when paused and pause when playing (mute when sounding, unmute when muted).
+    #[default]
+    Toggle,
+    /// Play (mute).
+    On,
+    /// Pause (unmute).
+    Off,
+}
+
+impl MediaToggle {
+    pub const ALL: [MediaToggle; 3] = [MediaToggle::Toggle, MediaToggle::On, MediaToggle::Off];
+
+    fn is_toggle(&self) -> bool {
+        *self == MediaToggle::Toggle
+    }
+
+    /// What the state becomes: `now` flipped by a toggle, or the one this sets.
+    pub fn apply(self, now: bool) -> bool {
+        match self {
+            MediaToggle::Toggle => !now,
+            MediaToggle::On => true,
+            MediaToggle::Off => false,
+        }
+    }
+}
+
+/// How far a new skip action skips (seconds).
+pub const DEFAULT_SKIP: f64 = 5.0;
+
+fn default_skip() -> f64 {
+    DEFAULT_SKIP
 }
 
 /// One branch of a conditional action.
@@ -672,6 +774,38 @@ impl Action {
             Action::SetVariable { .. } => "Set variable",
             Action::SetVariableMode { .. } => "Set variable mode",
             Action::Conditional { .. } => "Conditional",
+            Action::MediaPlayPause { .. } => "Play / pause media",
+            Action::MediaMuteUnmute { .. } => "Mute / unmute media",
+            Action::MediaSkip { .. } => "Skip forward / backward media",
+            Action::MediaSkipTo { .. } => "Skip to media time",
+        }
+    }
+
+    /// Whether this is one of the media actions.
+    pub fn is_media(&self) -> bool {
+        matches!(self, Action::MediaPlayPause { .. } | Action::MediaMuteUnmute { .. } | Action::MediaSkip { .. } | Action::MediaSkipTo { .. })
+    }
+
+    /// The video layer a media action is set to act on (`None`: the layer it is on, and for the
+    /// other actions).
+    pub fn media_target(&self) -> Option<NodeId> {
+        match self {
+            Action::MediaPlayPause { target, .. }
+            | Action::MediaMuteUnmute { target, .. }
+            | Action::MediaSkip { target, .. }
+            | Action::MediaSkipTo { target, .. } => *target,
+            _ => None,
+        }
+    }
+
+    /// Point a media action at `to` (other actions are left as they are).
+    pub fn set_media_target(&mut self, to: Option<NodeId>) {
+        if let Action::MediaPlayPause { target, .. }
+        | Action::MediaMuteUnmute { target, .. }
+        | Action::MediaSkip { target, .. }
+        | Action::MediaSkipTo { target, .. } = self
+        {
+            *target = to;
         }
     }
 
@@ -699,6 +833,37 @@ impl Action {
             | Action::ChangeTo { dest } => Some(*dest),
             _ => None,
         }
+    }
+}
+
+/// Longest link the player opens (characters).
+pub const MAX_LINK: usize = 4096;
+
+/// The address an open-link action opens, or `None` for one that mustn't open: only web (`http`,
+/// `https`), mail, phone and text-message links open, since a file's link runs on the viewer's
+/// machine (`javascript:`, `file:`, `data:` and the other schemes people register handlers for
+/// don't). An address without a scheme is a web address (`example.com/a` opens as
+/// `https://example.com/a`). Control characters anywhere refuse it, since browsers drop some of
+/// them before reading the scheme (`java\tscript:`).
+pub fn web_link(url: &str) -> Option<String> {
+    let u = url.trim();
+    if u.is_empty() || u.chars().count() > MAX_LINK || u.chars().any(char::is_control) {
+        return None;
+    }
+    // A scheme is letters, digits, `+`, `-` and `.` before a colon that comes before any path,
+    // query or fragment.
+    let head = u.split(['/', '?', '#']).next().unwrap_or(u);
+    match head.split_once(':') {
+        Some((scheme, _)) if !scheme.is_empty() => {
+            let ok_chars = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            let allowed = ["http", "https", "mailto", "tel", "sms"].iter().any(|a| scheme.eq_ignore_ascii_case(a));
+            (ok_chars && allowed).then(|| u.to_string())
+        }
+        // `:80/x` and `//host` aren't addresses either.
+        Some(_) => None,
+        None if u.starts_with("//") => None,
+        None => Some(format!("https://{u}")),
     }
 }
 
@@ -742,6 +907,10 @@ fn is_zero(v: &u32) -> bool {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 fn is_origin(p: &[f64; 2]) -> bool {

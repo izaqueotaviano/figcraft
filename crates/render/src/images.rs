@@ -66,11 +66,16 @@ pub fn profile_name(hash: &str, data: Option<&ImageData>) -> Option<String> {
 /// Straight RGBA → a premultiplied pixmap (max 16k per side).
 fn premultiplied(rgba: &image::RgbaImage) -> Option<Pixmap> {
     let (w, h) = rgba.dimensions();
+    premultiplied_raw(w, h, rgba.as_raw())
+}
+
+/// Straight RGBA bytes (`w × h × 4`) → a premultiplied pixmap (max 16k per side).
+fn premultiplied_raw(w: u32, h: u32, rgba: &[u8]) -> Option<Pixmap> {
     if w == 0 || h == 0 || w > 16_384 || h > 16_384 {
         return None;
     }
     let mut p = Pixmap::new(w, h)?;
-    for (dst, src) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(rgba.as_raw().chunks_exact(4)) {
+    for (dst, src) in p.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(rgba.chunks_exact(4)) {
         let a = u32::from(src.get(3).copied().unwrap_or(255));
         let pm = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;
         dst.copy_from_slice(&[
@@ -107,6 +112,52 @@ fn finish(p: &mut Pixmap, filters: &ImageFilters, profile: ColorProfile) {
         apply_filters(p, filters);
     }
     ColorProfile::Srgb.conversion_to(profile).apply_pixels(p.data_mut());
+}
+
+/// The most decoded video pictures kept (each is a screenful or more of pixels).
+const MAX_VIDEO_PICTURES: usize = 8;
+/// The most bytes those pictures take together.
+const MAX_VIDEO_PICTURE_BYTES: usize = 96 << 20;
+
+type VideoKey = (String, u32, ColorProfile);
+/// The kept pictures, least recently used first.
+type VideoPictures = Vec<(VideoKey, Arc<Pixmap>)>;
+
+fn video_cache() -> &'static Mutex<VideoPictures> {
+    static C: OnceLock<Mutex<VideoPictures>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// The picture video (or animated image) `hash` shows `t` seconds in, as a premultiplied pixmap in
+/// the document's colour space. The file is opened once and shared ([`figcraft_media::shared`]),
+/// the last few pictures are kept; `None` when the file isn't in the document, doesn't open or
+/// has no picture that decodes. Pictures are taken as sRGB.
+pub fn video_frame(hash: &str, data: Option<&ImageData>, t: f64, profile: ColorProfile) -> Option<Arc<Pixmap>> {
+    let media = figcraft_media::shared(hash, &data?.bytes).ok()?;
+    let index = media.frame_index_at(t);
+    let key = (hash.to_string(), index, profile);
+    {
+        let mut c = video_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = c.iter().position(|(k, _)| *k == key) {
+            // Most recently used last.
+            let entry = c.remove(at);
+            let pm = entry.1.clone();
+            c.push(entry);
+            return Some(pm);
+        }
+    }
+    let frame = media.frame_at(t).ok()?;
+    let mut pm = premultiplied_raw(frame.width, frame.height, &frame.rgba)?;
+    ColorProfile::Srgb.conversion_to(profile).apply_pixels(pm.data_mut());
+    let pm = Arc::new(pm);
+    let mut c = video_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    c.push((key, pm.clone()));
+    let mut bytes: usize = c.iter().map(|(_, p)| p.data().len()).sum();
+    while c.len() > 1 && (c.len() > MAX_VIDEO_PICTURES || bytes > MAX_VIDEO_PICTURE_BYTES) {
+        let (_, gone) = c.remove(0);
+        bytes = bytes.saturating_sub(gone.data().len());
+    }
+    Some(pm)
 }
 
 /// The most frames of an animated GIF that play.

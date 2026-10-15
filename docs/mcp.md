@@ -156,6 +156,21 @@ Or in a project's `.mcp.json`:
   `view.proofSrgb {on?}` (View ▸ Soft-proof sRGB) stripes those pixels so `screenshot {window:
   true}` shows where they are (after the next canvas render), and the colour picker says Outside
   sRGB for such a colour.
+- **Video**: `image.place {data | path, video?, autoplay?, loop?, muted?, poster?, mode?}` places a
+  video file as a layer with a video fill (AVI, MOV and MP4 always; `video: true` for an animated
+  GIF, WebP or PNG, which otherwise stay animated pictures). Only Motion-JPEG video and animated
+  images open: any other codec (H.264, HEVC, VP9, AV1, ProRes…), WebM and Matroska files and
+  fragmented MP4 are refused with `This video codec isn't supported yet: H.264 (avc1)` and nothing is
+  kept in the file; files over 100 MB are refused. `video.info {ids?}` lists a layer's video fills
+  (container, codec, size, `duration`, `frames`, `frameRate`, `hasAudio`, and `autoplay`, `loop`,
+  `muted`, `poster`, `mode`), `video.set {ids?, index?, autoplay?, loop?, muted?, poster?, mode?}`
+  changes how one plays. The canvas and exports show the `poster` picture; the presenter plays the
+  video (no sound is played). `proto.interaction.add` takes the triggers `{type: "mediaHit", time}`
+  and `{type: "mediaEnd"}` and the actions `mediaPlayPause`, `mediaMuteUnmute` (`mode`:
+  `toggle|on|off`), `mediaSkip {seconds}` and `mediaSkipTo {time}`, each with an optional `target`
+  (the video layer; default the layer the interaction is on). `ui.inspect` reports the presenter's
+  `media.videos` (`playing`, `position`, `muted`, `ended`…). See
+  [Supported video](prototyping-parity.md#supported-video).
 - **Image adjustments**: image paints carry `filters` (exposure, contrast, saturation, temperature,
   tint, highlights, shadows; each -1..1). `image.adjust {ids?, target?: fill|stroke, index?,
   preset?, filters?}` applies a built-in preset (`vivid`, `muted`, `warm`, `cool`, `blackAndWhite`,
@@ -782,13 +797,13 @@ The JSON returned by the public REST API's file endpoint (`GET /v1/files/:key`, 
 `run_command {command: "file.import", params: {path}}` (pages appended to the current document,
 with their flows, prototype settings and variables).
 The result's `warnings` list what was skipped or approximated (unsupported layer, paint and effect
-types, video triggers, controller triggers on more than one button, expression functions other than a variable mode lookup over a
+types, controller triggers on more than one button, media actions of unknown kinds, expression functions other than a variable mode lookup over a
 variable and one of its modes, bindings to library
 variables, instances of components outside the file, which come in as frames). Pages, the layer
 tree, geometry, paints, strokes, effects, corners, constraints, auto layout, layout grids, exports,
 text with styled runs, vectors, components, component sets, instances and component properties are
 mapped, and so is prototyping: `interactions` (on click, hover, press, drag, after delay, mouse
-enter/leave/down/up and key triggers, controller triggers as controller buttons; navigate, overlays, back, scroll to, change to, open link,
+enter/leave/down/up and key triggers, controller triggers as controller buttons, media hit and media end; navigate, overlays, back, scroll to, change to, open link, media play/pause/mute/skip actions,
 set variable (values, variable references and expressions), set variable mode and conditional
 (if / else if / else over expressions) actions; dissolve, smart animate, move, push and slide transitions with their easing,
 custom bezier and spring curves included), flow starting points, scroll overflow and fixed/sticky

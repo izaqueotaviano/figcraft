@@ -83,6 +83,14 @@ impl Services for WebServices {
             log::error!("couldn't open {url}: {e:?}");
         }
     }
+    /// Same-tab navigation: the link replaces the page (the caller has checked it is a web, mail
+    /// or phone link: never a `javascript:` one).
+    fn open_url_here(&mut self, url: &str) {
+        let Some(window) = web_sys::window() else { return };
+        if let Err(e) = window.location().assign(url) {
+            log::error!("couldn't open {url}: {e:?}");
+        }
+    }
     fn reduce_motion(&self) -> bool {
         self.reduce_motion.as_ref().is_some_and(web_sys::MediaQueryList::matches)
     }

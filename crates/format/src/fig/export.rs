@@ -1131,6 +1131,10 @@ impl<'d> Exporter<'d> {
         let mut f: Fields = vec![("visible", b(p.visible)), ("blendMode", e(blend_name(p.blend)))];
         let mut opacity = f64::from(p.opacity);
         match &p.kind {
+            PaintKind::Video(_) => {
+                self.warn("video fills were left out");
+                return None;
+            }
             PaintKind::Solid { color: c } => {
                 opacity *= f64::from(c.a);
                 f.extend([("type", e("SOLID")), ("color", color(c.with_alpha(1.0)))]);
@@ -2059,6 +2063,10 @@ impl<'d> Exporter<'d> {
                 event.push(("transitionTimeout", fl(f64::from(*ms) / 1000.0)));
                 "AFTER_TIMEOUT"
             }
+            Trigger::MediaHit { .. } | Trigger::MediaEnd => {
+                self.warn("media triggers were left out");
+                return None;
+            }
             Trigger::KeyPress { key } => {
                 let Some((codes, pad)) = key_codes(key) else {
                     self.warn("key triggers on keys the format has no code for were left out");
@@ -2114,9 +2122,19 @@ impl<'d> Exporter<'d> {
             }
             Action::Back => plain("BACK"),
             Action::CloseOverlay => plain("CLOSE"),
-            Action::OpenUrl { url } => Some(o(vec![("connectionType", e("URL")), ("connectionURL", s(url))])),
+            Action::OpenUrl { url, new_tab } => {
+                if !new_tab {
+                    // The schema above has no field for it (and none is invented here).
+                    self.warn("links that open in the same tab were written as links that open in a new tab");
+                }
+                Some(o(vec![("connectionType", e("URL")), ("connectionURL", s(url))]))
+            }
             Action::SetVariable { .. } | Action::SetVariableMode { .. } | Action::Conditional { .. } => {
                 self.warn("variable and conditional prototype actions were left out");
+                None
+            }
+            Action::MediaPlayPause { .. } | Action::MediaMuteUnmute { .. } | Action::MediaSkip { .. } | Action::MediaSkipTo { .. } => {
+                self.warn("media actions were left out");
                 None
             }
         }

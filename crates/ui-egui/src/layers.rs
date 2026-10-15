@@ -50,6 +50,8 @@ pub fn node_icon(doc: &Document, id: NodeId) -> Icon {
         NodeKind::Rectangle => {
             if n.fills.iter().any(|f| matches!(f.kind, figcraft_color::PaintKind::Image(_))) {
                 Icon::Image
+            } else if n.fills.iter().any(|f| matches!(f.kind, figcraft_color::PaintKind::Video(_))) {
+                Icon::Play
             } else {
                 Icon::Rectangle
             }

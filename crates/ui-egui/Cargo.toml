@@ -18,6 +18,7 @@ figcraft-render = { workspace = true }
 figcraft-pathops = { workspace = true }
 figcraft-engine = { workspace = true }
 figcraft-format = { workspace = true }
+figcraft-media = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,3 +33,4 @@ toml = "1"
 
 [dev-dependencies]
 wat = { workspace = true }
+figcraft-media = { workspace = true, features = ["testing"] }

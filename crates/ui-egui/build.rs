@@ -15,8 +15,15 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 
+/// The crate's directory, read when the script runs (not `env!`, which bakes in the path of
+/// whoever compiled the script: a build script binary built in another checkout, or a target
+/// directory shared between checkouts, would then read the wrong files).
+fn manifest_dir() -> std::path::PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
 fn main() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contributors");
+    let dir = manifest_dir().join("../../contributors");
     let json = read(&dir.join("contributors.json"), "the About window shows no contributors", |t| {
         serde_json::from_str::<Value>(t).map_err(|e| e.to_string())
     })
@@ -35,7 +42,7 @@ fn main() {
 
 /// `pub static LANGS: &[Lang]`: every `locales/*.toml`, English first, each table sorted by key.
 fn locales() -> String {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
+    let dir = manifest_dir().join("locales");
     println!("cargo::rerun-if-changed={}", dir.display());
     let mut files: Vec<_> =
         std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();

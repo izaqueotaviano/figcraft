@@ -1512,6 +1512,7 @@ dependencies = [
  "figcraft-format",
  "figcraft-geom",
  "figcraft-layout",
+ "figcraft-media",
  "figcraft-pathops",
  "figcraft-pdf",
  "figcraft-plugin",
@@ -1533,6 +1534,7 @@ name = "figcraft-format"
 version = "0.6.0"
 dependencies = [
  "figcraft-doc",
+ "figcraft-media",
  "figcraft-pathops",
  "flate2",
  "image",
@@ -1576,6 +1578,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "figcraft-media"
+version = "0.6.0"
+dependencies = [
+ "figcraft-media",
+ "image",
+ "png",
+ "proptest",
+]
+
+[[package]]
 name = "figcraft-pathops"
 version = "0.6.0"
 dependencies = [
@@ -1591,6 +1603,7 @@ dependencies = [
  "figcraft-color",
  "figcraft-doc",
  "figcraft-geom",
+ "figcraft-media",
  "figcraft-pathops",
  "figcraft-render",
  "figcraft-text",
@@ -1622,6 +1635,7 @@ dependencies = [
  "figcraft-color",
  "figcraft-doc",
  "figcraft-geom",
+ "figcraft-media",
  "figcraft-pathops",
  "figcraft-text",
  "image",
@@ -1664,6 +1678,7 @@ dependencies = [
  "figcraft-color",
  "figcraft-doc",
  "figcraft-geom",
+ "figcraft-media",
  "figcraft-pathops",
  "figcraft-render",
  "figcraft-text",
@@ -1698,6 +1713,7 @@ dependencies = [
  "figcraft-format",
  "figcraft-geom",
  "figcraft-layout",
+ "figcraft-media",
  "figcraft-pathops",
  "figcraft-render",
  "figcraft-text",

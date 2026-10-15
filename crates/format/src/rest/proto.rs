@@ -3,8 +3,8 @@
 //! `prototypeDevice`, `prototypeBackgrounds` and `prototypeStartNodeID`.
 
 use figcraft_doc::proto::{
-    Action, ConditionalBlock, DeviceRotation, Direction, Easing, Expr, ExprOp, Interaction, KeyMods, MAX_ACTION_DEPTH, MAX_EXPR_DEPTH, Overflow,
-    OverlayPosition, PrototypeSettings, ScrollPosition, Transition, Trigger, gamepad_button,
+    Action, ConditionalBlock, DEFAULT_SKIP, DeviceRotation, Direction, Easing, Expr, ExprOp, Interaction, KeyMods, MAX_ACTION_DEPTH, MAX_EXPR_DEPTH,
+    MediaToggle, Overflow, OverlayPosition, PrototypeSettings, ScrollPosition, Transition, Trigger, gamepad_button, media_time,
 };
 use figcraft_doc::{Node, NodeId, VariableType, VariableValue};
 use serde_json::{Value, json};
@@ -212,10 +212,9 @@ impl Ctx<'_> {
                 }
                 Some(Trigger::KeyPress { key })
             }
-            Some("ON_MEDIA_HIT" | "ON_MEDIA_END") => {
-                self.warn("video triggers are not supported and were skipped");
-                None
-            }
+            // The layer's video reaches `mediaHitTime` seconds, or ends.
+            Some("ON_MEDIA_HIT") => Some(Trigger::MediaHit { time: num(t, "mediaHitTime").and_then(media_time).unwrap_or(0.0) }),
+            Some("ON_MEDIA_END") => Some(Trigger::MediaEnd),
             _ => {
                 self.warn("prototype triggers of unknown types were skipped");
                 None
@@ -228,7 +227,11 @@ impl Ctx<'_> {
         let mapped = match text(a, "type") {
             Some("BACK") => Some(Action::Back),
             Some("CLOSE") => Some(Action::CloseOverlay),
-            Some("URL") => text(a, "url").filter(|u| !u.trim().is_empty()).map(|u| Action::OpenUrl { url: u.chars().take(MAX_URL).collect() }),
+            Some("URL") => text(a, "url").filter(|u| !u.trim().is_empty()).map(|u| Action::OpenUrl {
+                url: u.chars().take(MAX_URL).collect(),
+                // Opens in a new tab unless the file says otherwise (`openInNewTab: false`).
+                new_tab: a.get("openInNewTab").and_then(Value::as_bool).unwrap_or(true),
+            }),
             Some("NODE") => {
                 let mapped = self.node_action(a);
                 if mapped.is_some() && transition.is_none() {
@@ -252,16 +255,47 @@ impl Ctx<'_> {
                 }
                 blocks => self.conditional(blocks, transition, depth),
             },
-            Some("UPDATE_MEDIA_RUNTIME") => {
-                self.warn("video actions are not supported and were skipped");
-                None
-            }
+            Some("UPDATE_MEDIA_RUNTIME") => self.media_action(a),
             _ => {
                 self.warn("prototype actions of unknown types were skipped");
                 None
             }
         };
         out.extend(mapped);
+    }
+
+    /// A media action (`UPDATE_MEDIA_RUNTIME`): `mediaAction` says what, `destinationId` which video
+    /// layer (none: the layer the interaction is on), `amountToSkip` and `newTimestamp` how far
+    /// and where to. The names `MEDIA_PLAY_PAUSE`, `MEDIA_MUTE_UNMUTE`, `MEDIA_SKIP_FORWARD`,
+    /// `MEDIA_SKIP_BACKWARD` and `SKIP_TO` that some tools write are read as their plain ones.
+    fn media_action(&mut self, a: &Value) -> Option<Action> {
+        let target = match text(a, "destinationId").filter(|d| !d.is_empty()) {
+            None => None,
+            Some(d) => match self.dest(d) {
+                Some(t) => Some(t),
+                None => {
+                    self.warn("media actions on layers that aren't in the file were skipped");
+                    return None;
+                }
+            },
+        };
+        let amount = num(a, "amountToSkip").and_then(media_time).unwrap_or(DEFAULT_SKIP);
+        let which = text(a, "mediaAction").map(|m| m.to_ascii_uppercase());
+        Some(match which.as_deref().map(|m| m.strip_prefix("MEDIA_").unwrap_or(m)) {
+            Some("PLAY") => Action::MediaPlayPause { target, mode: MediaToggle::On },
+            Some("PAUSE") => Action::MediaPlayPause { target, mode: MediaToggle::Off },
+            Some("TOGGLE_PLAY_PAUSE" | "PLAY_PAUSE") => Action::MediaPlayPause { target, mode: MediaToggle::Toggle },
+            Some("MUTE") => Action::MediaMuteUnmute { target, mode: MediaToggle::On },
+            Some("UNMUTE") => Action::MediaMuteUnmute { target, mode: MediaToggle::Off },
+            Some("TOGGLE_MUTE_UNMUTE" | "MUTE_UNMUTE") => Action::MediaMuteUnmute { target, mode: MediaToggle::Toggle },
+            Some("SKIP_FORWARD") => Action::MediaSkip { target, seconds: amount },
+            Some("SKIP_BACKWARD") => Action::MediaSkip { target, seconds: -amount },
+            Some("SKIP_TO") => Action::MediaSkipTo { target, time: num(a, "newTimestamp").and_then(media_time).unwrap_or(0.0) },
+            _ => {
+                self.warn("media actions of unknown kinds were skipped");
+                return None;
+            }
+        })
     }
 
     /// If / else if / else blocks; skipped whole when a condition can't be imported (running the

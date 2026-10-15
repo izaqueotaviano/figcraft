@@ -288,11 +288,18 @@ impl Document {
     }
 }
 
-/// Image hashes painted by `paints`.
+/// Image and video hashes painted by `paints`.
 pub fn paint_images<'a>(paints: impl IntoIterator<Item = &'a Paint>, out: &mut BTreeSet<String>) {
     for p in paints {
-        if let PaintKind::Image(img) = &p.kind {
-            out.insert(img.image.clone());
+        match &p.kind {
+            PaintKind::Image(img) => {
+                out.insert(img.image.clone());
+            }
+            // Videos are kept in the same store, by their hash.
+            PaintKind::Video(v) => {
+                out.insert(v.video.clone());
+            }
+            _ => {}
         }
     }
 }

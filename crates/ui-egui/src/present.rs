@@ -89,6 +89,11 @@ struct FrameTex {
     tex: egui::TextureHandle,
     /// Page-space rect the texture covers.
     bounds: figcraft_geom::Rect,
+    /// The pixels per page unit it was rendered at and its size in pixels.
+    px: f64,
+    size: [usize; 2],
+    /// The picture of each playing video the texture holds (a video moving on is patched in).
+    videos: Vec<(NodeId, u32)>,
 }
 
 /// A transition in progress from a captured state to the current one.
@@ -337,7 +342,8 @@ pub struct Presenter {
     clock: f64,
     /// The layer the Inspect panel shows (the last one under the pointer).
     inspected: Option<NodeId>,
-    urls: Vec<String>,
+    /// Links the player is to open after its frame, each with whether it opens in a new tab.
+    urls: Vec<(String, bool)>,
     /// The editor's document as last copied (the player copies it again when it changes).
     source: Option<Arc<Document>>,
     /// Scrolling by dragging: what it scrolls and its offset when the drag began.
@@ -372,6 +378,8 @@ pub struct Presenter {
     pads_held: u32,
     /// Clicks on widgets' clickable parts (widget, target), for [`Presenter::click_widgets`].
     widget_clicks: Vec<(NodeId, String)>,
+    /// The videos on the screens shown, playing.
+    media: media::State,
 }
 
 impl Presenter {
@@ -435,6 +443,7 @@ impl Presenter {
             uses_pads: false,
             pads_held: 0,
             widget_clicks: Vec::new(),
+            media: media::State::default(),
         }
     }
 
@@ -711,6 +720,7 @@ impl Presenter {
             "screenRect": self.screen.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
             "flinging": !self.fling.is_empty(),
             "gamepad": self.uses_pads,
+            "media": media::inspect(self),
         })
     }
 
@@ -747,6 +757,8 @@ impl Presenter {
         self.delays_fired.clear();
         self.waiting.clear();
         self.hovered.clear();
+        // The screen's videos start over.
+        self.media_reset();
         self.rev += 1;
     }
 
@@ -991,9 +1003,12 @@ impl Presenter {
                 true
             }
             Action::CloseOverlay => self.close_overlay(now),
-            Action::OpenUrl { url } => {
+            Action::MediaPlayPause { .. } | Action::MediaMuteUnmute { .. } | Action::MediaSkip { .. } | Action::MediaSkipTo { .. } => {
+                self.media_action(a, node)
+            }
+            Action::OpenUrl { url, new_tab } => {
                 if !url.trim().is_empty() {
-                    self.urls.push(url.clone());
+                    self.urls.push((url.clone(), *new_tab));
                 }
                 true
             }
@@ -1056,10 +1071,13 @@ impl Presenter {
             crate::repaint_in(ctx, next + f64::from(ctx.input(|i| i.predicted_dt)));
         }
         let key = (self.rev, px_scale.to_bits(), clock.map_or(0, |c| c.0), !hide.is_empty());
-        if let Some(t) = self.textures.get(&id)
-            && t.key == key
+        // The videos playing in it, each at the picture it shows now.
+        let live = media::live(self, doc, id, hide);
+        let cached = self.textures.get(&id).filter(|t| t.key == key).cloned();
+        if let Some(c) = &cached
+            && c.videos == media::painted(&live)
         {
-            return Some(t.clone());
+            return cached;
         }
         let without;
         let doc = if hide.is_empty() {
@@ -1074,11 +1092,28 @@ impl Presenter {
             without = d;
             &without
         };
+        let posed;
+        let doc = if live.is_empty() {
+            doc
+        } else {
+            posed = media::posed(doc, &live);
+            &posed
+        };
+        // Only videos moved on: render again the places they cover and patch them in.
+        if let Some(mut c) = cached
+            && media::patch(self, doc, id, &mut c, &live, t)
+        {
+            self.textures.insert(id, c.clone());
+            return Some(c);
+        }
         let bounds = figcraft_render::export_bounds(doc, id)?;
-        let pix = figcraft_render::render_node_at(doc, id, texture_scale(ctx, bounds, px_scale), t)?;
+        let px = texture_scale(ctx, bounds, px_scale);
+        let pix = figcraft_render::render_node_at(doc, id, px, t)?;
         let img = crate::render_worker::screen_image(&pix, doc.color_profile);
+        let size = img.size;
         let tex = ctx.load_texture(format!("present-{}", id.0), img, egui::TextureOptions::LINEAR);
-        let ft = FrameTex { key, tex, bounds };
+        media::rendered(self, &live);
+        let ft = FrameTex { key, tex, bounds, px: media::effective(px), size, videos: media::painted(&live) };
         self.textures.insert(id, ft.clone());
         Some(ft)
     }
@@ -1964,9 +1999,7 @@ fn poll_pads(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context) {
 
 /// After a player's frame: the links it opens and the widget clicks it took.
 fn finish(app: &mut FigApp, p: &mut Presenter) {
-    for u in p.urls.drain(..) {
-        app.services.open_url(&u);
-    }
+    media::open_links(app, p);
     if let Some(e) = p.click_widgets(&app.session) {
         app.toast(e);
     }
@@ -2254,6 +2287,8 @@ fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) 
         // The pane only takes the keyboard while the pointer is over it.
         input(p, &ctx, &l, over, chrome.keys && (!chrome.pane || over), chrome.pane, now);
     }
+    // Videos play by the player's time, each frame (whatever the input did).
+    media::tick(p, &ctx, now);
     // Scrolling that carries on after the input let go, moved after the input: wheel input in this
     // frame (the system's own momentum) stops a coast before it moves again. Repaints while it
     // moves, and while the wheel waits to coast (nothing else wakes the window once the wheel
@@ -3043,6 +3078,9 @@ fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Lay
         ctx.request_repaint();
     }
 }
+
+#[path = "present_media.rs"]
+mod media;
 
 #[cfg(test)]
 #[path = "present_variables_tests.rs"]

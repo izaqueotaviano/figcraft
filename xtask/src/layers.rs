@@ -8,6 +8,8 @@ use std::process::Command;
 const TABLE: &[(&str, u8)] = &[
     ("geom", 0),
     ("color", 0),
+    // Video and animation sources: pure decoding and a clock, nothing of ours below it.
+    ("media", 0),
     ("doc", 1),
     ("layout", 2),
     ("text", 2),

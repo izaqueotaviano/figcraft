@@ -189,6 +189,12 @@ pub trait Services {
         None
     }
     fn open_url(&mut self, _url: &str) {}
+    /// Open `url` in the page the app runs in, replacing it (an open-link action set to open in
+    /// the same tab; only the web version has a page to replace). Elsewhere it opens the system
+    /// browser, as [`open_url`](Self::open_url) does.
+    fn open_url_here(&mut self, url: &str) {
+        self.open_url(url);
+    }
     /// Show the file at `path` in the platform's file manager (Finder, Explorer), selected where the
     /// platform can.
     fn reveal_path(&mut self, _path: &std::path::Path) {}
@@ -836,9 +842,10 @@ impl FigApp {
     }
 
     pub fn open_dialog(&mut self) {
-        if let Some(p) =
-            self.services.pick_open(i18n::tr("Open"), &["figcraft", "fig", "json", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"])
-        {
+        if let Some(p) = self.services.pick_open(
+            i18n::tr("Open"),
+            &["figcraft", "fig", "json", "svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "avi", "mov", "mp4", "m4v", "webm", "mkv"],
+        ) {
             let ps = p.to_string_lossy().to_string();
             if self.run("file.open", json!({"path": ps})).is_some() {
                 self.ui.home = false;
@@ -848,9 +855,9 @@ impl FigApp {
 
     pub fn import_dialog(&mut self, place: bool) {
         let exts: &[&str] = if place {
-            &["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff"]
+            &["png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "avi", "mov", "mp4", "m4v", "webm", "mkv"]
         } else {
-            &["svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "figcraft", "fig"]
+            &["svg", "png", "jpg", "jpeg", "webp", "gif", "tif", "tiff", "figcraft", "fig", "avi", "mov", "mp4", "m4v", "webm", "mkv"]
         };
         if let Some(p) = self.services.pick_open(if place { i18n::tr("Place image") } else { i18n::tr("Import") }, exts) {
             let ps = p.to_string_lossy().to_string();

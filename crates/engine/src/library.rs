@@ -774,6 +774,7 @@ fn localize(n: &mut Node, src: &Document, map: &BTreeMap<NodeId, NodeId>, styles
         figcraft_doc::proto::retain_deep(&mut it.actions, &mut |a| {
             !matches!(a, Action::SetVariable { .. } | Action::SetVariableMode { .. } | Action::Conditional { .. })
                 && a.dest().is_none_or(|d| map.contains_key(&d))
+                && a.media_target().is_none_or(|d| map.contains_key(&d))
         });
     }
     n.interactions.retain(|it| !it.actions.is_empty());

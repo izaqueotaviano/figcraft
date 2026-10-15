@@ -284,3 +284,20 @@ fn depth_samples() {
         std::fs::write(format!("{stem}-{name}.png"), figcraft_render::encode_png(&pix).unwrap()).unwrap();
     }
 }
+
+#[test]
+fn a_video_prints_as_its_poster_picture() {
+    let mut d = Document::new("video");
+    let p = d.first_page().unwrap_or(NodeId(0));
+    let f = d.create(p, NodeKind::Frame, "F", 0.0, 0.0, 200.0, 100.0).unwrap();
+    let r = d.create(f, NodeKind::Rectangle, "Clip", 10.0, 10.0, 128.0, 96.0).unwrap();
+    d.images.insert("pdf-video".into(), ImageData { bytes: Arc::new(figcraft_media::testing::synthetic(64, 48, 30, 10)), width: 64, height: 48 });
+    d.get_mut(r).unwrap().fills = vec![Paint::video("pdf-video", ImageScaleMode::Fill)];
+    let pdf = export_pdf(&d, &[f], &PdfOptions::default()).unwrap();
+    assert_eq!(page_count(&pdf), 1);
+    assert_eq!(count(&pdf, "/Subtype/Image"), 1, "the poster picture is the one image");
+    // Without the file in the document nothing is drawn, and the export still works.
+    d.images.clear();
+    let pdf = export_pdf(&d, &[f], &PdfOptions::default()).unwrap();
+    assert_eq!(count(&pdf, "/Subtype/Image"), 0);
+}

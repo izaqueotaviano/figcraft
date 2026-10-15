@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use figcraft_doc::color::{BlendMode, Color, ColorStop, Gradient, GradientKind, ImageScaleMode, Paint, PaintKind};
 use figcraft_doc::geom::{Affine, Point};
-use figcraft_doc::proto::{Action, Direction, Easing, Flow, Interaction, KeyMods, Overflow, OverlayPosition, ScrollPosition, Transition, Trigger};
+use figcraft_doc::proto::{
+    Action, Direction, Easing, Flow, Interaction, KeyMods, MediaToggle, Overflow, OverlayPosition, ScrollPosition, Transition, Trigger,
+};
 use figcraft_doc::*;
 use serde_json::Value;
 
@@ -516,7 +518,7 @@ impl Gen {
                 4 => Action::ChangeTo { dest },
                 5 => Action::Back,
                 6 => Action::CloseOverlay,
-                _ => Action::OpenUrl { url: "https://example.com".into() },
+                _ => Action::OpenUrl { url: "https://example.com".into(), new_tab: true },
             };
             let d = self.r.pick(&[Direction::Left, Direction::Right, Direction::Top, Direction::Bottom]);
             let transition = self.r.pick(&[
@@ -1063,4 +1065,44 @@ fn local_samples_round_trip() {
         }
         assert_same(&a, &b, &format!("{} (export warnings: {warnings:?})", p.display()));
     }
+}
+
+/// Videos and what controls them have no counterpart in the format: they are left out, said so in
+/// the warnings, and the rest of the layers still round trip.
+#[test]
+fn video_fills_and_media_interactions_are_left_out_with_a_warning() {
+    let mut doc = Document::new("Media");
+    let page = doc.first_page().unwrap();
+    let screen = doc.create(page, NodeKind::Frame, "Screen", 0.0, 0.0, 200.0, 200.0).unwrap();
+    let clip = doc.create(screen, NodeKind::Rectangle, "Clip", 10.0, 10.0, 160.0, 90.0).unwrap();
+    let button = doc.create(screen, NodeKind::Rectangle, "Button", 10.0, 120.0, 40.0, 20.0).unwrap();
+    let solid = Paint::solid(Color::new(1.0, 0.0, 0.0, 1.0));
+    doc.get_mut(clip).unwrap().fills = vec![Paint::video("deadbeef", ImageScaleMode::Fill), solid.clone()];
+    let it = |trigger, action| Interaction {
+        trigger,
+        actions: vec![action],
+        transition: Transition::Instant,
+        duration_ms: 300,
+        easing: Easing::default(),
+        delay_ms: 0,
+    };
+    doc.get_mut(clip).unwrap().interactions = vec![it(Trigger::MediaEnd, Action::Back), it(Trigger::MediaHit { time: 2.0 }, Action::Back)];
+    doc.get_mut(button).unwrap().interactions = vec![
+        it(Trigger::OnClick, Action::MediaPlayPause { target: Some(clip), mode: MediaToggle::Toggle }),
+        it(Trigger::OnClick, Action::MediaSkipTo { target: None, time: 1.0 }),
+        it(Trigger::OnClick, Action::Back),
+    ];
+    let (bytes, warnings) = export(&doc, None).unwrap();
+    for what in ["video fills were left out", "media triggers were left out", "media actions were left out"] {
+        assert!(warnings.iter().any(|w| w == what), "{what}: {warnings:?}");
+    }
+    let (back, _) = import(&bytes, "x").unwrap();
+    let find = |name: &str| back.nodes().find(|n| n.name == name).cloned().unwrap();
+    // The other paint stays; the video fill and the media interactions are gone, the rest remain.
+    assert_eq!(find("Clip").fills.len(), 1);
+    assert!(matches!(find("Clip").fills[0].kind, PaintKind::Solid { .. }));
+    assert!(find("Clip").interactions.is_empty());
+    let kept = find("Button").interactions;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    assert_eq!(kept[0].actions, vec![Action::Back]);
 }

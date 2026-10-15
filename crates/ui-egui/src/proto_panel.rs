@@ -5,8 +5,8 @@
 use egui::{Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_color::Paint;
 use figcraft_doc::proto::{
-    Action, ConditionalBlock, Direction, Easing, GAMEPAD_BUTTONS, Interaction, KeyMods, Overflow, OverlayPosition, ScrollPosition, Transition,
-    Trigger, is_gamepad_button,
+    Action, ConditionalBlock, DEFAULT_SKIP, Direction, Easing, GAMEPAD_BUTTONS, Interaction, KeyMods, MediaToggle, Overflow, OverlayPosition,
+    ScrollPosition, Transition, Trigger, is_gamepad_button, seconds_text,
 };
 use figcraft_doc::*;
 use serde_json::{Value, json};
@@ -19,6 +19,12 @@ use crate::proto_editor::{Cx, Slot, set_action};
 use crate::right::{menu_item, menu_popup, row};
 use crate::theme::{ACCENT, Tokens, regular, semibold};
 use crate::widgets::{self, FIELD_H, FieldEdit, Lead, PAD};
+
+#[path = "proto_media.rs"]
+pub(crate) mod media;
+#[cfg(test)]
+#[path = "proto_media_ui_tests.rs"]
+mod media_ui_tests;
 
 /// The interaction whose editor popover is open: (layer, index).
 fn editor_id() -> Id {
@@ -40,7 +46,7 @@ pub fn editor(ctx: &egui::Context) -> Option<(NodeId, usize)> {
     ctx.data(|d| d.get_temp(editor_id()))
 }
 
-const TRIGGERS: [&str; 10] = [
+const TRIGGERS: [&str; 12] = [
     tr_noop("On click"),
     tr_noop("On drag"),
     tr_noop("While hovering"),
@@ -51,6 +57,8 @@ const TRIGGERS: [&str; 10] = [
     tr_noop("Mouse down"),
     tr_noop("Mouse up"),
     tr_noop("After delay"),
+    tr_noop("On media hit"),
+    tr_noop("On media end"),
 ];
 
 fn trigger_kind(t: &Trigger) -> &'static str {
@@ -65,6 +73,8 @@ fn trigger_kind(t: &Trigger) -> &'static str {
         Trigger::MouseDown => "Mouse down",
         Trigger::MouseUp => "Mouse up",
         Trigger::AfterDelay { .. } => "After delay",
+        Trigger::MediaHit { .. } => "On media hit",
+        Trigger::MediaEnd => "On media end",
     }
 }
 
@@ -85,6 +95,11 @@ fn trigger_of(kind: &str, cur: &Trigger) -> Trigger {
             Trigger::AfterDelay { ms } => Trigger::AfterDelay { ms: *ms },
             _ => Trigger::AfterDelay { ms: 800 },
         },
+        "On media hit" => match cur {
+            Trigger::MediaHit { time } => Trigger::MediaHit { time: *time },
+            _ => Trigger::MediaHit { time: 0.0 },
+        },
+        "On media end" => Trigger::MediaEnd,
         _ => Trigger::OnClick,
     }
 }
@@ -97,6 +112,7 @@ fn trigger_summary(t: &Trigger) -> String {
         Trigger::KeyPress { key } if is_gamepad_button(key) => key.clone(),
         Trigger::KeyPress { key } => trf("Key/Gamepad {key}", &[("key", key)]),
         Trigger::AfterDelay { ms } => trf("After delay {ms}ms", &[("ms", ms)]),
+        Trigger::MediaHit { time } => trf("On media hit {time}s", &[("time", &seconds_text(*time))]),
         other => tr(trigger_kind(other)).into(),
     }
 }
@@ -163,7 +179,7 @@ fn name_of(doc: &Document, id: NodeId) -> String {
 pub(crate) fn action_summary(doc: &Document, a: &Action) -> String {
     let vars = &doc.variables;
     match a {
-        Action::OpenUrl { url } if !url.is_empty() => trf("Open link {url}", &[("url", url)]),
+        Action::OpenUrl { url, .. } if !url.is_empty() => trf("Open link {url}", &[("url", url)]),
         Action::SetVariable { variable, expr, .. } => {
             let name = vars.get(variable).map_or(variable.as_str(), |v| v.name.as_str());
             match expr {
@@ -180,10 +196,27 @@ pub(crate) fn action_summary(doc: &Document, a: &Action) -> String {
             Some(c) => trf("If {condition}", &[("condition", &c.display(vars))]),
             None => tr(a.label()).to_string(),
         },
+        Action::MediaSkip { target, seconds } => {
+            let what = trf("Skip media {seconds}s", &[("seconds", &seconds_text(*seconds))]);
+            media_summary(doc, what, *target)
+        }
+        Action::MediaSkipTo { target, time } => {
+            let what = trf("Skip media to {time}s", &[("time", &seconds_text(*time))]);
+            media_summary(doc, what, *target)
+        }
+        Action::MediaPlayPause { target, .. } | Action::MediaMuteUnmute { target, .. } => media_summary(doc, tr(a.label()).to_string(), *target),
         other => match other.dest() {
             Some(d) => format!("{} {}", tr(other.label()), name_of(doc, d)),
             None => tr(other.label()).to_string(),
         },
+    }
+}
+
+/// A media action's summary: what it does, and the video layer when it isn't the layer itself.
+fn media_summary(doc: &Document, what: String, target: Option<NodeId>) -> String {
+    match target {
+        Some(t) => format!("{what} · {}", name_of(doc, t)),
+        None => what,
     }
 }
 
@@ -218,7 +251,7 @@ pub(crate) fn action_of(label: &str, doc: &Document, page: NodeId, node: NodeId,
             let dest = doc.subtree(root).into_iter().skip(1).find(|i| *i != node)?;
             Action::ScrollTo { dest, offset: [0.0, 0.0] }
         }
-        "Open link" => Action::OpenUrl { url: String::new() },
+        "Open link" => Action::OpenUrl { url: String::new(), new_tab: true },
         "Open overlay" => {
             Action::OpenOverlay { dest: frame_dest?, position: OverlayPosition::Center, close_on_outside: true, background: None, offset: None }
         }
@@ -241,6 +274,10 @@ pub(crate) fn action_of(label: &str, doc: &Document, page: NodeId, node: NodeId,
                 actions: vec![],
             }],
         },
+        "Play / pause media" => Action::MediaPlayPause { target: media::default_target(doc, node), mode: MediaToggle::Toggle },
+        "Mute / unmute media" => Action::MediaMuteUnmute { target: media::default_target(doc, node), mode: MediaToggle::Toggle },
+        "Skip forward / backward media" => Action::MediaSkip { target: media::default_target(doc, node), seconds: DEFAULT_SKIP },
+        "Skip to media time" => Action::MediaSkipTo { target: media::default_target(doc, node), time: 0.0 },
         _ => return None,
     })
 }
@@ -639,7 +676,7 @@ fn editor_popover(app: &mut FigApp, ctx: &egui::Context, doc: &Document, page: N
                 // it was last frame: the minimum lets the list grow when an action opens.)
                 let max_h = (screen.max.y - pos.y - 64.0).max(160.0);
                 egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(max_h).min_scrolled_height(max_h).show(ui, |ui| {
-                    trigger_rows(app, ui, node, k, it);
+                    trigger_rows(app, ui, doc, node, k, it);
                     widgets::separator(ui);
                     widgets::sublabels(ui, if it.actions.len() > 1 { tr("Actions") } else { tr("Action") }, None);
                     let cx = Cx { doc, page, node, k };
@@ -663,7 +700,7 @@ fn animates(a: &Action) -> bool {
     !matches!(
         a,
         Action::OpenUrl { .. } | Action::SetVariable { .. } | Action::SetVariableMode { .. } | Action::CloseOverlay | Action::Conditional { .. }
-    )
+    ) && !a.is_media()
 }
 
 fn capture_id() -> Id {
@@ -674,14 +711,14 @@ fn capturing(ctx: &egui::Context) -> bool {
     ctx.data(|d| d.get_temp::<bool>(capture_id())).unwrap_or(false)
 }
 
-fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Interaction) {
+fn trigger_rows(app: &mut FigApp, ui: &mut Ui, doc: &Document, node: NodeId, k: usize, it: &Interaction) {
     let t = Tokens::get(ui.ctx());
     widgets::sublabels(ui, tr("Trigger"), None);
     row(ui, 32.0, |ui| {
         let resp = widgets::dropdown(ui, tr(trigger_kind(&it.trigger)), ui.available_width(), None);
         menu_popup(&resp).show(|ui| {
             for (i, l) in TRIGGERS.iter().enumerate() {
-                if i == 4 || i == 5 || i == 9 {
+                if i == 4 || i == 5 || i == 9 || i == 10 {
                     ui.separator();
                 }
                 if menu_item(ui, tr(l), "") {
@@ -721,6 +758,7 @@ fn trigger_rows(app: &mut FigApp, ui: &mut Ui, node: NodeId, k: usize, it: &Inte
                 }
             });
         }
+        Trigger::MediaHit { time } => media::hit_rows(app, ui, doc, node, k, *time),
         Trigger::KeyPress { key } => {
             row(ui, 32.0, |ui| {
                 let cap = capturing(ui.ctx());
@@ -865,13 +903,22 @@ pub(crate) fn action_fields(app: &mut FigApp, ui: &mut Ui, doc: &Document, page:
                 }
             });
         }
-        Action::OpenUrl { url } => {
+        Action::OpenUrl { url, new_tab } => {
+            let new_tab = *new_tab;
             widgets::sublabels(ui, tr("Link"), None);
             row(ui, 32.0, |ui| {
                 if let Some(u) = widgets::text_field(ui, slot.id("proto_url"), url, ui.available_width(), "https://")
                     && &u != url
                 {
-                    set_action(app, slot, Action::OpenUrl { url: u.trim().to_string() });
+                    set_action(app, slot, Action::OpenUrl { url: u.trim().to_string(), new_tab });
+                }
+            });
+            row(ui, 28.0, |ui| {
+                let resp = widgets::checkbox_resp(ui, new_tab, tr("Open in a new tab")).tip(tr(
+                    "The desktop app always opens the system browser. In the web version, turning this off replaces the current page with the link.",
+                ));
+                if resp.clicked() {
+                    set_action(app, slot, Action::OpenUrl { url: url.clone(), new_tab: !new_tab });
                 }
             });
         }
@@ -979,6 +1026,9 @@ pub(crate) fn action_fields(app: &mut FigApp, ui: &mut Ui, doc: &Document, page:
                     }
                 });
             });
+        }
+        Action::MediaPlayPause { .. } | Action::MediaMuteUnmute { .. } | Action::MediaSkip { .. } | Action::MediaSkipTo { .. } => {
+            media::action_rows(app, ui, doc, slot, action)
         }
         // Edited by `proto_editor`; Back and Close overlay have no settings.
         Action::SetVariable { .. } | Action::Conditional { .. } | Action::Back | Action::CloseOverlay => {}

@@ -835,6 +835,7 @@ pub fn paint_name(paint: &figcraft_color::Paint) -> String {
         }
         PaintKind::Gradient(_) => tr("Gradient").into(),
         PaintKind::Image(_) => tr("Image").into(),
+        PaintKind::Video(_) => tr("Video").into(),
         PaintKind::Pattern(_) => tr("Pattern").into(),
     }
 }
@@ -864,8 +865,12 @@ pub fn paint_swatch(painter: &egui::Painter, rect: Rect, paint: &figcraft_color:
                 clip.rect_filled(Rect::from_min_max(pos2(x0, rect.min.y), pos2(x1, rect.max.y)), CornerRadius::ZERO, c);
             }
         }
-        PaintKind::Image(_) | PaintKind::Pattern(_) => {
-            let icon = if matches!(paint.kind, PaintKind::Image(_)) { Icon::Image } else { Icon::ViewGrid };
+        PaintKind::Image(_) | PaintKind::Video(_) | PaintKind::Pattern(_) => {
+            let icon = match paint.kind {
+                PaintKind::Image(_) => Icon::Image,
+                PaintKind::Video(_) => Icon::Play,
+                _ => Icon::ViewGrid,
+            };
             clip.rect_filled(rect, CornerRadius::ZERO, Color32::from_gray(0xB3));
             icons::paint(&clip, rect.shrink(2.0), icon, Color32::WHITE);
         }
@@ -875,6 +880,11 @@ pub fn paint_swatch(painter: &egui::Painter, rect: Rect, paint: &figcraft_color:
 
 /// A small checkbox with label.
 pub fn checkbox(ui: &mut Ui, on: bool, label: &str) -> bool {
+    checkbox_resp(ui, on, label).clicked()
+}
+
+/// A small checkbox with label, as its response (to add a tooltip to, or read hovering from).
+pub fn checkbox_resp(ui: &mut Ui, on: bool, label: &str) -> Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(200.0), FIELD_H), Sense::click());
     a11y::checkbox(&resp, label, on);
@@ -886,7 +896,7 @@ pub fn checkbox(ui: &mut Ui, on: bool, label: &str) -> bool {
         ui.painter().rect_stroke(b, CornerRadius::same(3), Stroke::new(1.0, t.border_strong), StrokeKind::Inside);
     }
     ui.painter().text(pos2(b.max.x + 8.0, rect.center().y), Align2::LEFT_CENTER, label, regular(11.0), t.text);
-    resp.clicked()
+    resp
 }
 
 /// A radio button with label; returns whether it was clicked.
