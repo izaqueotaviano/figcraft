@@ -1896,16 +1896,7 @@ impl Session {
 
     fn eyedrop(&mut self, ev: &PointerEvent) -> Result<()> {
         let ds = self.ds()?;
-        let doc = ds.doc.clone();
-        let view = figcraft_render::View { origin: (ev.x, ev.y), scale: ev.zoom.max(0.01), width: 1, height: 1 };
-        let Some(pix) = figcraft_render::render_view(&doc, ds.page, &view, &Default::default()) else { return Ok(()) };
-        let rgba = figcraft_render::to_rgba8(&pix);
-        let c = figcraft_color::Color::from_rgba8(
-            rgba.first().copied().unwrap_or(0),
-            rgba.get(1).copied().unwrap_or(0),
-            rgba.get(2).copied().unwrap_or(0),
-            255,
-        );
+        let Some(c) = picked_color(ds, ev) else { return Ok(()) };
         let sel = ds.selection.clone();
         if !sel.is_empty() {
             self.execute("node.set", &json!({"ids": sel, "props": {"fill": c.to_css_hex()}}))?;
@@ -2282,6 +2273,64 @@ impl Session {
 /// The readout of a shape handle drag on `id`.
 fn shape_hint(doc: &Document, id: NodeId, handle: ShapeHandle, zoom: f64) -> Option<ShapeHint> {
     Some(ShapeHint { handle, value: crate::shape_handles::value(doc, id, handle)?, at: crate::shape_handles::handle_at(doc, id, handle, zoom)? })
+}
+
+/// The colour the eyedropper picks at `ev`: the pixel the canvas shows there, in the file's colour
+/// space. It samples the canvas's own render (its device pixel grid at the screen's pixel density,
+/// its pixel preview resolution, level of detail, outline and focus views) with the backdrop that
+/// background blurs and glass read. A pixel the canvas shows only partly covered is seen over the
+/// page's colour. When the pixel is exactly a solid paint of a layer there (or the page's colour)
+/// in 8 bits, that colour is picked as stored rather than rounded to 8 bits.
+pub(crate) fn picked_color(ds: &crate::DocState, ev: &PointerEvent) -> Option<figcraft_color::Color> {
+    use figcraft_color::Color;
+    let zoom = if ev.zoom.is_finite() && ev.zoom > 0.0 { ev.zoom } else { ds.view.zoom };
+    let scale = ds.view.render_scale(zoom);
+    let opts = figcraft_render::Options {
+        outline_mode: ds.view.outlines,
+        outline: figcraft_render::Outline { hidden: ds.view.outline_hidden, bounds: ds.view.outline_bounds, light: false },
+        outlined: if ds.view.outlines_selection { ds.selection.clone() } else { vec![] },
+        solo: ds.focused(),
+        lod: true,
+        ..Default::default()
+    };
+    let doc = &ds.doc;
+    let [r, g, b, a] = figcraft_render::sample(doc, ds.page, (ev.x, ev.y), scale, &opts)?;
+    let page_bg = match doc.node(ds.page).map(|p| &p.kind) {
+        Some(NodeKind::Page { background, .. }) => Some(background.with_alpha(1.0).sanitized()),
+        _ => None,
+    };
+    // Premultiplied: what the pixel leaves uncovered shows the page's colour (white without one).
+    let under = page_bg.unwrap_or(Color::WHITE).to_rgba8();
+    let over = |c: u8, u: Option<&u8>| {
+        let rest = (u32::from(u.copied().unwrap_or(255)) * (255 - u32::from(a)) + 127) / 255;
+        (u32::from(c) + rest).min(255) as u8
+    };
+    let seen = [over(r, under.first()), over(g, under.get(1)), over(b, under.get(2))];
+    let p = Point::new(ev.x, ev.y);
+    let stored = doc
+        .subtree(ds.page)
+        .into_iter()
+        .rev()
+        .filter_map(|id| doc.node(id).filter(|n| n.visible && n.own_paint_bounds(doc.world_transform(id)).contains(p)))
+        .flat_map(|n| {
+            let runs: Vec<&figcraft_color::Paint> = match &n.kind {
+                NodeKind::Text(t) => t.runs.iter().filter_map(|r| r.style.fills.as_ref()).flatten().collect(),
+                _ => vec![],
+            };
+            n.fills
+                .iter()
+                .chain(n.strokes.iter())
+                .chain(runs)
+                .filter(|p| p.visible)
+                .filter_map(figcraft_color::Paint::solid_color)
+                .collect::<Vec<_>>()
+        })
+        .chain(page_bg)
+        .find(|c| {
+            let [cr, cg, cb, ca] = c.to_rgba8();
+            ca == 255 && [cr, cg, cb] == seen
+        });
+    Some(stored.unwrap_or_else(|| Color::from_rgba8(seen[0], seen[1], seen[2], 255)).with_alpha(1.0))
 }
 
 #[allow(dead_code)]

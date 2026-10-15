@@ -166,6 +166,13 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
             ds.zoom_to_fit();
         }
     }
+    // The screen's pixel density: the eyedropper samples the pixels the canvas renders.
+    let ppp = f64::from(ctx.pixels_per_point());
+    if let Ok(ds) = app.session.ds_mut()
+        && ds.view.pixels_per_point != ppp
+    {
+        ds.view.pixels_per_point = ppp;
+    }
     let own_cursor = input(app, ui, &resp);
     crate::live::track_pointer(app, &ctx);
     app.sync_preedit();

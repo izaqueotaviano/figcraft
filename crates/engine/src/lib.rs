@@ -161,6 +161,14 @@ pub struct ViewState {
     pub snap_objects: bool,
     pub snap_pixel: bool,
     pub ui_hidden: bool,
+    /// The screen's device pixels per logical pixel (set by the UI each frame, 1 headless): the
+    /// canvas renders at `zoom` times this, and the eyedropper samples the same pixels. Not saved.
+    #[serde(skip, default = "one")]
+    pub pixels_per_point: f64,
+}
+
+fn one() -> f64 {
+    1.0
 }
 
 impl Default for ViewState {
@@ -190,6 +198,7 @@ impl Default for ViewState {
             snap_objects: true,
             snap_pixel: true,
             ui_hidden: false,
+            pixels_per_point: 1.0,
         }
     }
 }
@@ -232,6 +241,13 @@ impl ViewState {
     }
     /// Pixel preview's resolution (rendered pixels per page pixel) when it's on and zoomed in past
     /// it; below that the canvas is already coarser than the preview.
+    /// Device pixels per page unit of the canvas's render at `zoom` (screen pixels per page unit):
+    /// the pixel preview resolution when that shows, else `zoom` on the screen's device pixels.
+    pub fn render_scale(&self, zoom: f64) -> f64 {
+        let k = f64::from(self.pixel_scale.clamp(1, 2));
+        let ppp = if self.pixels_per_point.is_finite() && self.pixels_per_point > 0.0 { self.pixels_per_point.min(16.0) } else { 1.0 };
+        if self.pixel_preview && zoom > k { k } else { zoom * ppp }
+    }
     pub fn pixel_preview_scale(&self) -> Option<f64> {
         let k = f64::from(self.pixel_scale.clamp(1, 2));
         (self.pixel_preview && self.zoom > k).then_some(k)
@@ -1448,6 +1464,8 @@ mod export_behaviour_tests;
 mod export_depth_tests;
 #[cfg(test)]
 mod extended_chain_tests;
+#[cfg(test)]
+mod eyedropper_tests;
 #[cfg(test)]
 mod fig_export_assets_tests;
 #[cfg(test)]

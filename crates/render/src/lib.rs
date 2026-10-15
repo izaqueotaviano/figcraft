@@ -305,6 +305,45 @@ fn area_at(doc: &Document, ids: &[NodeId], b: Rect, scale: f64, time: f64) -> Op
     Some(pix)
 }
 
+/// The most device pixels [`sample`] renders past each side of its pixel for what background
+/// blurs and glass read.
+pub const SAMPLE_MARGIN: f64 = 512.0;
+/// The fewest device pixels [`sample`] renders past each side of its pixel.
+const SAMPLE_MIN_MARGIN: f64 = 8.0;
+
+/// The pixel a render of `page` at `scale` device pixels per unit shows at page point `p`
+/// (premultiplied RGBA, in the document's colour space): the pixel of the zoom's device grid
+/// (the one [`retained::snap`] puts every canvas render on) that `p` falls in. The eyedropper's
+/// sample: what the canvas shows there, not a pixel straddling four of its pixels.
+///
+/// A window around the pixel is rendered so background blurs and glass read their whole backdrop,
+/// as a band of [`render_view`] does (a lone pixel's backdrop is only itself). When that reach is
+/// more than [`SAMPLE_MARGIN`] at `scale` (a big blur, zoomed far in), the pixel is taken at the
+/// largest scale that keeps it within: a blurred backdrop is smooth, and flat areas are the same
+/// at any scale. `None` for a scale or point that isn't finite.
+pub fn sample(doc: &Document, page: NodeId, p: (f64, f64), scale: f64, opts: &Options) -> Option<[u8; 4]> {
+    if !(scale.is_finite() && scale > 0.0 && p.0.is_finite() && p.1.is_finite()) {
+        return None;
+    }
+    let blur = max_backdrop_blur(doc);
+    let scale = if backdrop_reach(blur, scale) > SAMPLE_MARGIN { ((SAMPLE_MARGIN - 3.0) / (blur * 1.5)).min(scale) } else { scale };
+    if !(scale.is_finite() && scale > 0.0) {
+        return None;
+    }
+    // A few pixels at least: anti-aliasing a shape that crosses a pixmap's edge isn't quite what
+    // it is inside one.
+    let margin = backdrop_reach(blur, scale).ceil().clamp(SAMPLE_MIN_MARGIN, SAMPLE_MARGIN);
+    let (px, py) = ((p.0 * scale).floor(), (p.1 * scale).floor());
+    if !(px.abs() < 1e15 && py.abs() < 1e15) {
+        return None;
+    }
+    let side = 2 * margin as u32 + 1;
+    let view = View { origin: ((px - margin) / scale, (py - margin) / scale), scale, width: side, height: side };
+    let pix = render_view_single(doc, page, &view, opts)?;
+    let c = pix.pixel(margin as u32, margin as u32)?;
+    Some([c.red(), c.green(), c.blue(), c.alpha()])
+}
+
 /// Un-premultiply into straight RGBA8 bytes.
 pub fn to_rgba8(p: &Pixmap) -> Vec<u8> {
     let mut out = Vec::with_capacity(p.data().len());
