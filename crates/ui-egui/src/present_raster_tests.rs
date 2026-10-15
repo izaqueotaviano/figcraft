@@ -24,7 +24,9 @@ pub(crate) struct Raster {
 }
 
 impl Raster {
-    /// Apply the textures a frame sent (whole images and patches).
+    /// Apply the textures a frame sent (whole images and patches). The ones it frees are the
+    /// caller's to remove ([`Raster::free`]) once the frame has been drawn: a backend frees after
+    /// painting.
     pub fn feed(&mut self, delta: &egui::TexturesDelta) {
         for (id, deltas) in &delta.set {
             for d in deltas {
@@ -46,8 +48,12 @@ impl Raster {
                 }
             }
         }
-        for id in &delta.free {
-            self.textures.remove(id);
+    }
+
+    /// Drop textures a frame freed.
+    pub fn free(&mut self, ids: impl IntoIterator<Item = TextureId>) {
+        for id in ids {
+            self.textures.remove(&id);
         }
     }
 
@@ -125,6 +131,8 @@ pub(crate) struct Rec {
     pub u: Ui,
     raster: Raster,
     last: Vec<egui::epaint::ClippedShape>,
+    /// Textures the last frame freed (they went after it was painted).
+    freed: Vec<TextureId>,
 }
 
 impl Rec {
@@ -136,7 +144,7 @@ impl Rec {
             size: vec2(1440.0, 900.0),
             repaint: None,
         };
-        let mut r = Self { u, raster: Raster::default(), last: Vec::new() };
+        let mut r = Self { u, raster: Raster::default(), last: Vec::new(), freed: Vec::new() };
         for _ in 0..3 {
             r.frame(Vec::new());
         }
@@ -156,7 +164,10 @@ impl Rec {
             egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, self.u.size)), time: Some(self.u.time), events, ..Default::default() };
         let app = &mut self.u.app;
         let mut out = self.u.ctx.run_ui(input, |ui| app.ui(ui));
+        // The textures freed after the last frame was painted go now; this frame's are sent.
+        self.raster.free(std::mem::take(&mut self.freed));
         self.raster.feed(&out.textures_delta);
+        self.freed = out.textures_delta.free.iter().copied().collect();
         out.textures_delta.clear();
         self.last = out.shapes.clone();
         out
@@ -315,6 +326,18 @@ fn snapshots() {
     r.frame(vec![Event::PointerMoved(Pos2::new(700.0, 2.0))]);
     r.frames(20);
     r.save(&dir.join("hidden-peek.png"));
+    // The screens panel, grouped under two flows, the second screen showing.
+    r.u.app.ui.present = None;
+    crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &serde_json::json!({"presentHideUi": false, "presentSidePanel": true})).unwrap();
+    let home = r.u.app.session.doc().unwrap().top_frames(r.u.app.session.page().unwrap())[2];
+    r.run("proto.flow.add", serde_json::json!({"start": home, "name": "Main app"}));
+    r.frame(vec![Event::PointerMoved(Pos2::new(300.0, 400.0))]);
+    r.run("proto.present", serde_json::json!({"start": a}));
+    r.frames(2);
+    r.click(r.control(&format!("screen:{}", r.u.app.session.doc().unwrap().top_frames(r.u.app.session.page().unwrap())[1].0)));
+    r.frames(3);
+    r.save(&dir.join("screens-panel.png"));
+    crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &serde_json::json!({"presentSidePanel": false})).unwrap();
     // The Options menu with the colour around the prototype (the controls come back: the hidden
     // state is kept between presentations).
     r.u.app.ui.present = None;
@@ -342,4 +365,9 @@ fn snapshots() {
     r.run("proto.preview", serde_json::json!({"start": a}));
     r.frames(40);
     r.save(&dir.join("pane.png"));
+}
+
+/// [`demo`] for the chrome tests.
+pub(crate) fn demo_for_tests() -> Rec {
+    demo().0
 }

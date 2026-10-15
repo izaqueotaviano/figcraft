@@ -38,6 +38,8 @@ pub enum Act {
     HideUi,
     /// The next colour around the prototype.
     Background,
+    /// Show or hide the screens panel.
+    Screens,
     /// End the presentation.
     Close,
 }
@@ -45,8 +47,19 @@ pub enum Act {
 #[cfg(test)]
 impl Act {
     /// Every act, in the order the list shows them (the table must hold each of them).
-    pub const ALL: &'static [Act] =
-        &[Act::Next, Act::Prev, Act::Restart, Act::NextSize, Act::Fullscreen, Act::HideUi, Act::Background, Act::Comments, Act::Help, Act::Close];
+    pub const ALL: &'static [Act] = &[
+        Act::Next,
+        Act::Prev,
+        Act::Restart,
+        Act::NextSize,
+        Act::Fullscreen,
+        Act::HideUi,
+        Act::Background,
+        Act::Screens,
+        Act::Comments,
+        Act::Help,
+        Act::Close,
+    ];
 }
 
 /// Which modifier keys a chord needs.
@@ -143,6 +156,7 @@ pub const SHORTCUTS: &[Shortcut] = &[
         chords: &[chord(Key::B, With::None, "B")],
         pane: false,
     },
+    Shortcut { act: Act::Screens, label: tr_noop("Screens"), group: tr_noop("Panels"), chords: &[chord(Key::S, With::None, "S")], pane: false },
     Shortcut {
         act: Act::Comments,
         label: tr_noop("Comments"),
@@ -246,6 +260,10 @@ pub fn run(p: &mut Presenter, act: Act, ctx: &Context, now: f64, pane: bool) -> 
         }
         Act::Background => {
             p.view.background = p.view.background.next();
+            true
+        }
+        Act::Screens => {
+            p.view.side_panel = !p.view.side_panel;
             true
         }
         // Escape is handled where the frame ends, after what else takes it ([`escape`]).
@@ -423,6 +441,7 @@ pub fn options_json(v: &PresentView) -> Value {
         "responsive": v.responsive,
         "hideUi": v.hide_ui,
         "background": v.background.id(),
+        "sidePanel": v.side_panel,
     })
 }
 
@@ -435,8 +454,8 @@ fn both(app: &mut FigApp, f: impl Fn(&mut PresentView, &mut Ux)) {
 }
 
 /// `ui.set` keys for the presenter's controls (`proto.presentOptions` has the sizing ones):
-/// `presentHideUi` (true|false), `presentBackground` (`page`, `dark`, `grey`, `light`, `white`,
-/// `black` or a hex colour). They change the presentation playing and what the next one starts
+/// `presentHideUi` (true|false), `presentSidePanel` (true|false: the screens panel),
+/// `presentBackground` (`page`, `dark`, `grey`, `light`, `white`, `black` or a hex colour). They change the presentation playing and what the next one starts
 /// with.
 pub fn set_options(app: &mut FigApp, p: &Value) -> Result<(), String> {
     let flag = |key: &str| -> Result<Option<bool>, String> {
@@ -450,6 +469,9 @@ pub fn set_options(app: &mut FigApp, p: &Value) -> Result<(), String> {
             v.hide_ui = on;
             ux.reveal = 0.0;
         });
+    }
+    if let Some(on) = flag("presentSidePanel")? {
+        both(app, |v, _| v.side_panel = on);
     }
     if let Some(v) = p.get("presentBackground").filter(|v| !v.is_null()) {
         let bg = v.as_str().and_then(Background::parse).ok_or("presentBackground: page, dark, grey, light, white, black or a hex colour")?;
@@ -587,7 +609,11 @@ pub struct Ux {
     pub help: bool,
     /// Where the controls of the bar (and the panels) were drawn last, by name (window points):
     /// `ui.inspect` reports them so that a script can click them.
-    pub controls: Vec<(&'static str, Rect)>,
+    pub controls: Vec<(String, Rect)>,
+    /// The screen the screens panel last scrolled to (it scrolls again when the screen changes).
+    pub panel_seen: Option<NodeId>,
+    /// The screens panel's thumbnails.
+    pub thumbs: super::panel::Thumbs,
     /// How far the hidden bar has slid in, 0 (away) to 1 (all the way), and when it last moved.
     pub reveal: f32,
     pub reveal_at: f64,
@@ -595,8 +621,8 @@ pub struct Ux {
 
 impl Ux {
     /// Note where the control `name` is drawn.
-    pub fn note(&mut self, name: &'static str, r: Rect) {
-        self.controls.push((name, r));
+    pub fn note(&mut self, name: impl Into<String>, r: Rect) {
+        self.controls.push((name.into(), r));
     }
 }
 

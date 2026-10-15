@@ -46,6 +46,8 @@ use crate::widgets;
 
 // The presenter's own controls (shortcut table and list, stepping through screens, ...), in files
 // of their own; they work on the player's private state.
+#[path = "present_panel.rs"]
+pub(crate) mod panel;
 #[path = "present_chrome.rs"]
 pub(crate) mod ux;
 
@@ -264,6 +266,8 @@ pub struct PresentView {
     pub hide_ui: bool,
     /// The colour around the prototype: the page's (the default) or one picked here.
     pub background: ux::Background,
+    /// The screens panel at the left: the page's screens under their flows, to jump to one.
+    pub side_panel: bool,
 }
 
 impl Default for PresentView {
@@ -277,6 +281,7 @@ impl Default for PresentView {
             responsive: false,
             hide_ui: false,
             background: ux::Background::Page,
+            side_panel: false,
         }
     }
 }
@@ -737,9 +742,11 @@ impl Presenter {
             "shortcuts": self.ux.help,
             "hideUi": self.view.hide_ui,
             "background": self.view.background.id(),
+            "sidePanel": self.view.side_panel,
+            "thumbnails": {"kept": self.ux.thumbs.count(), "drawnLastFrame": self.ux.thumbs.drawn, "waiting": self.ux.thumbs.pending, "total": self.ux.thumbs.total, "slowestMs": self.ux.thumbs.slowest_ms},
             "barReveal": self.ux.reveal,
             "position": ux::position(self).map(|(i, n)| [i, n]),
-            "controls": self.ux.controls.iter().map(|(n, r)| ((*n).to_string(), json!([r.min.x, r.min.y, r.max.x, r.max.y]))).collect::<serde_json::Map<String, Value>>(),
+            "controls": self.ux.controls.iter().map(|(n, r)| (n.clone(), json!([r.min.x, r.min.y, r.max.x, r.max.y]))).collect::<serde_json::Map<String, Value>>(),
         })
     }
 
@@ -1917,6 +1924,8 @@ enum BarAction {
     Inspect,
     /// Show or hide the shortcut list.
     Help,
+    /// Show or hide the screens panel.
+    Screens,
 }
 
 impl BarAction {
@@ -1930,6 +1939,7 @@ impl BarAction {
             BarAction::Comments => "comments",
             BarAction::Inspect => "inspect",
             BarAction::Help => "help",
+            BarAction::Screens => "screens",
         }
     }
 }
@@ -1943,6 +1953,8 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         pres.sync(&ds.doc, now);
     }
     poll_pads(app, &mut pres, &ctx);
+    // (The controls note where they are drawn, panels and bar, from nothing each frame.)
+    pres.ux.controls.clear();
     let mut action = None;
     // A menu that is open takes Escape (the key then doesn't end the presentation too).
     let menu_open = egui::Popup::is_any_open(&ctx);
@@ -1964,6 +1976,14 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
             .frame(egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.border)))
             .show(ui, |ui| inspect_panel(app, ui, &pres));
     }
+    if pres.view.side_panel && !hidden {
+        let t = Tokens::get(&ctx);
+        egui::Panel::left("present_screens")
+            .resizable(false)
+            .exact_size(panel::WIDTH)
+            .frame(egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.border)))
+            .show(ui, |ui| panel::show(&mut pres, ui, now));
+    }
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
         action = player(&mut pres, ui, ui.max_rect(), now, Chrome { keys: !typing, hidden, ..FULL }).or(action);
     });
@@ -1971,6 +1991,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         Some(BarAction::Comments) => pres.view.comments = !pres.view.comments,
         Some(BarAction::Inspect) => pres.view.inspect = !pres.view.inspect,
         Some(BarAction::Help) => pres.ux.help = !pres.ux.help,
+        Some(BarAction::Screens) => pres.view.side_panel = !pres.view.side_panel,
         _ => {}
     }
     ux::help_window(&ctx, &mut pres);
@@ -2110,6 +2131,7 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
     let typing = ds.text_edit.is_some() || crate::a11y::field_focused(ctx);
     let chrome = Chrome { pane: true, bar_h: 36.0, pad: 12.0, round: style.visuals.window_corner_radius.nw, keys: !typing, hidden: false };
     poll_pads(app, &mut pane.player, ctx);
+    pane.player.ux.controls.clear();
     let mut action = None;
     egui::Window::new(tr("Prototype preview"))
         .id(pane_id())
@@ -2273,7 +2295,6 @@ fn corner_masks(s: Rect, r: f32, color: Color32) -> egui::Shape {
 fn player(p: &mut Presenter, ui: &mut Ui, rect: Rect, now: f64, chrome: Chrome) -> Option<BarAction> {
     let ctx = ui.ctx().clone();
     p.clock = now;
-    p.ux.controls.clear();
     // With the controls hidden the prototype takes the whole window; the bar slides in over it
     // from the top edge while the pointer asks for it (`slid`: where it is then), drawn last.
     let hidden = chrome.hidden && !chrome.pane;
@@ -2472,6 +2493,23 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
     // Left: the flow picker and the frame's name, clipped before the buttons.
     let left = ui.painter().with_clip_rect(Rect::from_min_max(bar.min, pos2(x, bar.max.y)));
     let mut lx = bar.min.x + if chrome.pane { 8.0 } else { 12.0 };
+    // The full-window bar opens with the screens panel's toggle.
+    if !chrome.pane {
+        let br = Rect::from_min_size(pos2(bar.min.x + 8.0, bar.center().y - 12.0), vec2(24.0, 24.0));
+        p.ux.note(BarAction::Screens.id(), br);
+        let resp = ui.interact(br.intersect(left.clip_rect()), ui.id().with("pbar_screens"), Sense::click());
+        let resp = resp.tip(format!("{} ({})", tr("Screens"), crate::toolbar::pretty_shortcut(ux::spec(ux::Act::Screens))));
+        if p.view.side_panel {
+            left.rect_filled(br, CornerRadius::same(5), ACCENT);
+        } else if resp.hovered() {
+            left.rect_filled(br, CornerRadius::same(5), hover);
+        }
+        icons::paint(&left, br.shrink(5.0), Icon::Screens, text);
+        if resp.clicked() {
+            action = Some(BarAction::Screens);
+        }
+        lx = br.max.x + 8.0;
+    }
     // The flow playing: its name on the picker, its description on hover; the menu lists each
     // flow with its description.
     let playing = flows.iter().find(|f| f.start == p.start);

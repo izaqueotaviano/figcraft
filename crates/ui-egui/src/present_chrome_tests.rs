@@ -233,6 +233,15 @@ fn every_listed_key_does_what_the_list_says() {
                     }
                     assert_eq!(presenter(&u)["background"], json!("page"), "{what}: round again after the five presets");
                 }
+                Act::Screens => {
+                    assert_eq!(presenter(&u)["sidePanel"], json!(false));
+                    key(&mut u);
+                    assert_eq!(presenter(&u)["sidePanel"], json!(true), "{what}");
+                    u.frames(2, Vec::new);
+                    assert!(!presenter(&u)["controls"][format!("screen:{}", a.0)].is_null(), "{what}: the panel lists the screens");
+                    key(&mut u);
+                    assert_eq!(presenter(&u)["sidePanel"], json!(false), "{what}: again hides it");
+                }
                 Act::Comments => {
                     assert_eq!(presenter(&u)["comments"], json!(false));
                     key(&mut u);
@@ -858,4 +867,267 @@ fn a_device_gets_a_shadow_on_a_light_background_so_a_pale_body_keeps_its_outline
         out.shapes.len()
     };
     assert!(count(true) > count(false), "the shadow is one more shape");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The screens panel.
+
+use crate::present::panel;
+
+/// `n` screens S0, S1, … side by side on a page.
+fn screens(n: u32) -> (Session, Vec<NodeId>) {
+    let mut s = Session::new();
+    let ids = (0..n).map(|i| frame(&mut s, &format!("S{i}"), 400.0 * f64::from(i))).collect();
+    (s, ids)
+}
+
+fn names(doc: &figcraft_doc::Document, ids: &[NodeId]) -> Vec<String> {
+    ids.iter().filter_map(|i| doc.node(*i)).map(|n| n.name.clone()).collect()
+}
+
+#[test]
+fn screens_group_under_the_flow_that_starts_them_in_reading_order() {
+    let (mut s, ids) = screens(5);
+    let doc = |s: &Session| s.doc().unwrap().clone();
+    let shape = |s: &Session, current: NodeId| -> Vec<(Option<String>, Vec<String>)> {
+        let d = doc(s);
+        panel::groups(&d, current).into_iter().map(|g| (g.flow.map(|f| f.name), names(&d, &g.screens))).collect()
+    };
+    // No flows: one group with every screen.
+    assert_eq!(shape(&s, ids[0]), vec![(None, vec!["S0", "S1", "S2", "S3", "S4"].into_iter().map(String::from).collect())]);
+    // A flow starts its group, which runs to the next flow's start; screens before the first flow
+    // are a group of their own.
+    ex(&mut s, "proto.flow.add", json!({"start": ids[3], "name": "Two"}));
+    ex(&mut s, "proto.flow.add", json!({"start": ids[1], "name": "One"}));
+    let want = |g: &[(Option<&str>, &[&str])]| -> Vec<(Option<String>, Vec<String>)> {
+        g.iter().map(|(f, n)| (f.map(String::from), n.iter().map(|x| x.to_string()).collect())).collect()
+    };
+    assert_eq!(shape(&s, ids[0]), want(&[(None, &["S0"]), (Some("One"), &["S1", "S2"]), (Some("Two"), &["S3", "S4"])]));
+    // A flow at the very first screen leaves no ungrouped group; the same start twice counts once.
+    ex(&mut s, "proto.flow.add", json!({"start": ids[0], "name": "Zero"}));
+    ex(&mut s, "proto.flow.add", json!({"start": ids[0], "name": "Zero again"}));
+    assert_eq!(shape(&s, ids[0]), want(&[(Some("Zero"), &["S0"]), (Some("One"), &["S1", "S2"]), (Some("Two"), &["S3", "S4"])]));
+    // A flow whose start was deleted has no group (and no screens vanish with it).
+    ex(&mut s, "edit.delete", json!({"ids": [ids[3]]}));
+    assert_eq!(shape(&s, ids[0]), want(&[(Some("Zero"), &["S0"]), (Some("One"), &["S1", "S2", "S4"])]));
+    // The order is the keys' (reading order), not the layers': S9 made last sits first on the page.
+    let first = frame(&mut s, "S9", -400.0);
+    let d = doc(&s);
+    assert_eq!(names(&d, &panel::groups(&d, ids[0]).iter().flat_map(|g| g.screens.clone()).collect::<Vec<_>>())[0], "S9");
+    assert_eq!(panel::groups(&d, ids[0]).iter().flat_map(|g| g.screens.clone()).collect::<Vec<_>>(), super::ux::sequence(&d, ids[0]));
+    let _ = first;
+}
+
+#[test]
+fn the_screens_panel_lists_the_screens_jumps_and_refits_the_prototype() {
+    let (mut s, ids) = screens(4);
+    ex(&mut s, "proto.flow.add", json!({"start": ids[0], "name": "Onboarding"}));
+    ex(&mut s, "proto.flow.add", json!({"start": ids[2], "name": "Checkout"}));
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": ids[0]}));
+    assert_eq!(screen_rect(&u), [570.0, 270.0, 870.0, 670.0], "without the panel");
+    assert!(presenter(&u)["controls"][format!("screen:{}", ids[0].0)].is_null());
+    // The bar's button and S open it at the left; the prototype is centred in what is left.
+    click_control(&mut u, "screens");
+    assert_eq!(presenter(&u)["sidePanel"], json!(true));
+    u.frames(2, Vec::new);
+    assert_eq!(screen_rect(&u), [570.0 + 116.0, 270.0, 870.0 + 116.0, 670.0], "re-fitted beside the 232 wide panel");
+    for id in &ids {
+        assert!(!presenter(&u)["controls"][format!("screen:{}", id.0)].is_null(), "{id:?} is listed");
+    }
+    for f in [ids[0], ids[2]] {
+        assert!(!presenter(&u)["controls"][format!("flow:{}", f.0)].is_null(), "a flow's title");
+    }
+    let out = frame_out(&mut u, vec![]);
+    for label in ["Onboarding", "Checkout", "S0", "S1", "S2", "S3"] {
+        assert!(has_text(&out, label), "{label}: {:?}", texts(&out));
+    }
+    // A click on a screen shows it at once; Back returns (the history keeps where it came from).
+    click_control(&mut u, &format!("screen:{}", ids[2].0));
+    assert_eq!(presenter(&u)["current"], json!(ids[2]));
+    assert_eq!(presenter(&u)["position"], json!([3, 4]));
+    assert_eq!(presenter(&u)["history"], json!([ids[0]]));
+    // Clicking the screen that shows changes nothing (no history entry); neither does the flow's
+    // start moving: the flow playing stays.
+    click_control(&mut u, &format!("screen:{}", ids[2].0));
+    assert_eq!(presenter(&u)["history"], json!([ids[0]]));
+    assert_eq!(presenter(&u)["start"], json!(ids[0]));
+    // A flow's title plays that flow from its start (a restart: no history).
+    click_control(&mut u, &format!("flow:{}", ids[2].0));
+    assert_eq!(
+        (presenter(&u)["current"].clone(), presenter(&u)["start"].clone(), presenter(&u)["history"].clone()),
+        (json!(ids[2]), json!(ids[2]), json!([]))
+    );
+    // The keys and the bar keep the panel in step (it scrolls to the current screen).
+    press(&mut u, Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(presenter(&u)["current"], json!(ids[3]));
+    // S hides it and the prototype is centred again; so does hiding the whole UI.
+    press(&mut u, Key::S, Modifiers::NONE);
+    u.frames(2, Vec::new);
+    assert_eq!(presenter(&u)["sidePanel"], json!(false));
+    assert_eq!(screen_rect(&u)[0], 570.0);
+    // Kept for the next presentation and set from the control channel.
+    press(&mut u, Key::S, Modifiers::NONE);
+    assert_eq!(u.app.inspect()["presentOptions"]["sidePanel"], json!(true));
+    cmd_backslash(&mut u);
+    u.frames(2, Vec::new);
+    assert!(presenter(&u)["controls"].as_object().is_some_and(|c| c.is_empty()), "hidden with the rest of the UI: {}", presenter(&u)["controls"]);
+    assert_eq!(screen_rect(&u), [570.0, 250.0, 870.0, 650.0]);
+    let set = |u: &mut Ui, v: Value| crate::control::handle(&mut u.app, &u.ctx, "ui.set", &json!({"presentSidePanel": v}));
+    assert!(set(&mut u, json!("yes")).is_err());
+    set(&mut u, json!(false)).unwrap();
+    assert_eq!(u.app.inspect()["presentOptions"]["sidePanel"], json!(false));
+}
+
+#[test]
+fn a_click_on_a_screen_closes_an_overlay_and_a_long_list_scrolls_to_the_current_screen() {
+    // An overlay over screen 0: clicking another screen in the panel replaces the screen and closes it.
+    let (mut u, [a, _, c], menu) = linked();
+    let _ = menu;
+    u.run("proto.presentOptions", json!({"scale": "fit"}));
+    click_hotspot(&mut u, 1);
+    assert_eq!(presenter(&u)["overlays"].as_array().map(Vec::len), Some(1));
+    press(&mut u, Key::S, Modifiers::NONE);
+    u.frames(2, Vec::new);
+    click_control(&mut u, &format!("screen:{}", c.0));
+    assert_eq!((presenter(&u)["current"].clone(), presenter(&u)["overlays"].clone()), (json!(c), json!([])));
+    let _ = a;
+    // Forty screens don't fit the panel: it scrolls to the current screen as the keys step through.
+    let (s, ids) = screens(40);
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": ids[0]}));
+    press(&mut u, Key::S, Modifiers::NONE);
+    u.frames(2, Vec::new);
+    assert!(presenter(&u)["controls"][format!("screen:{}", ids[39].0)].is_null(), "the last one is out of view");
+    assert!(!presenter(&u)["controls"][format!("screen:{}", ids[0].0)].is_null());
+    for _ in 0..30 {
+        press(&mut u, Key::N, Modifiers::NONE);
+    }
+    u.frames(40, Vec::new);
+    let row = &presenter(&u)["controls"][format!("screen:{}", ids[30].0)];
+    let (top, bottom) = (row[1].as_f64().unwrap_or(-1.0), row[3].as_f64().unwrap_or(-1.0));
+    assert!(top >= 40.0 && bottom <= 900.0, "the current screen's row is in view: {row}");
+    // Jumping by click needs the row on screen too (once the list has stopped scrolling).
+    u.frames(40, Vec::new);
+    click_control(&mut u, &format!("screen:{}", ids[28].0));
+    assert_eq!(presenter(&u)["current"], json!(ids[28]));
+}
+
+fn thumbs(u: &Ui) -> Value {
+    presenter(u)["thumbnails"].clone()
+}
+
+#[test]
+fn thumbnails_draw_one_a_frame_for_the_rows_in_view_and_then_the_panel_is_idle() {
+    let (s, ids) = screens(40);
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": ids[0]}));
+    press(&mut u, Key::S, Modifiers::NONE);
+    // Never more than one a frame, and the frames they cost are counted.
+    let mut kept = 0;
+    let mut frames_with_one = 0;
+    for _ in 0..60 {
+        u.frame(vec![]);
+        let t = thumbs(&u);
+        let drawn = t["drawnLastFrame"].as_u64().unwrap_or(99);
+        assert!(drawn <= 1, "{t}");
+        frames_with_one += drawn;
+        kept = t["kept"].as_u64().unwrap_or(0);
+        if t["waiting"] == json!(0) {
+            break;
+        }
+    }
+    // The rows in view (860 points of 56) have theirs, not the forty.
+    assert!((14..=17).contains(&kept), "{kept} kept: {}", thumbs(&u));
+    assert_eq!(frames_with_one, kept, "one frame each");
+    // Once they are drawn nothing asks for another frame.
+    u.frames(5, Vec::new);
+    assert!(!u.repaints(), "an idle panel draws no frames: {:?}", u.repaint);
+    // Scrolling the list to the end draws the others as they come into view.
+    for _ in 0..39 {
+        press(&mut u, Key::N, Modifiers::NONE);
+    }
+    u.frames(80, Vec::new);
+    assert_eq!(thumbs(&u)["waiting"], json!(0));
+    assert!(thumbs(&u)["kept"].as_u64().unwrap_or(0) >= 28, "{}", thumbs(&u));
+    assert!(!u.repaints());
+}
+
+#[test]
+fn an_edit_in_the_editor_draws_the_thumbnails_in_view_again() {
+    let mut r = crate::present::raster_tests::demo_for_tests();
+    let welcome = r.u.app.session.doc().unwrap().top_frames(r.u.app.session.page().unwrap())[0];
+    crate::control::handle(&mut r.u.app, &r.u.ctx, "ui.set", &json!({"presentSidePanel": true})).unwrap();
+    r.run("proto.present", json!({"start": welcome}));
+    r.frames(20);
+    let before = r.u.app.inspect()["presenter"]["thumbnails"].clone();
+    assert_eq!(before["waiting"], json!(0), "{before}");
+    // The thumbnail's box: its row's rect, 38 in from the left.
+    let c = &r.u.app.inspect()["presenter"]["controls"][format!("screen:{}", welcome.0)];
+    let at = |dx: f32, dy: f32| {
+        (c[0].as_f64().unwrap_or(0.0) as f32 + 38.0 + dx, ((c[1].as_f64().unwrap_or(0.0) + c[3].as_f64().unwrap_or(0.0)) / 2.0) as f32 + dy)
+    };
+    let (x, y) = at(20.0, -12.0);
+    let blue = px(&r.image(), x as u32, y as u32);
+    assert!(blue[2] > 200 && blue[0] < 80, "the hero is blue: {blue:?}");
+    // The hero turns red in the editor: the presenter follows, and the thumbnail is drawn again
+    // (the old picture stays until then).
+    let hero = r.u.app.session.doc().unwrap().node(welcome).unwrap().children[0];
+    r.u.app.session.execute("fill.set", &json!({"ids": [hero], "color": "#FF0000"})).unwrap();
+    r.frame(vec![]);
+    assert_eq!(px(&r.image(), x as u32, y as u32), blue, "stale, but not blank");
+    r.frames(20);
+    let red = px(&r.image(), x as u32, y as u32);
+    assert!(red[0] > 200 && red[2] < 80, "the new hero shows: {red:?}");
+    assert!(r.u.app.inspect()["presenter"]["thumbnails"]["total"].as_u64().unwrap_or(0) > before["total"].as_u64().unwrap_or(0));
+}
+
+/// The cost of the screens panel on a big page: 150 screens of 30 layers each. Prints what a frame
+/// takes with the panel drawing its thumbnails and at rest; the thumbnails never take more than a
+/// frame each and never slow the frames past a generous bound.
+#[test]
+fn the_screens_panel_frame_cost() {
+    let mut s = Session::new();
+    for i in 0..150 {
+        let f = frame(&mut s, &format!("Screen {i}"), 400.0 * f64::from(i));
+        for k in 0..30 {
+            ex(
+                &mut s,
+                "shape.rectangle",
+                json!({"parent": f, "x": 10, "y": 10 + 12 * k, "width": 200, "height": 10, "props": {"name": format!("Row {k}"), "fill": "#336699"}}),
+            );
+        }
+    }
+    let first = s.doc().unwrap().top_frames(s.page().unwrap())[0];
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": first}));
+    press(&mut u, Key::S, Modifiers::NONE);
+    let mut worst: f64 = 0.0;
+    let mut times = Vec::new();
+    for _ in 0..40 {
+        let t0 = std::time::Instant::now();
+        u.frame(vec![]);
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        worst = worst.max(ms);
+        times.push(ms);
+    }
+    let rest: Vec<f64> = (0..30)
+        .map(|_| {
+            let t0 = std::time::Instant::now();
+            u.frame(vec![]);
+            t0.elapsed().as_secs_f64() * 1000.0
+        })
+        .collect();
+    let avg = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    let t = thumbs(&u);
+    eprintln!(
+        "screens panel (150 screens x 30 layers): {:.2} ms a frame while drawing thumbnails (worst {worst:.2}), {:.2} ms at rest; {} thumbnails, slowest {:.2} ms",
+        avg(&times),
+        avg(&rest),
+        t["kept"],
+        t["slowestMs"].as_f64().unwrap_or(0.0)
+    );
+    assert!(thumbs(&u)["kept"].as_u64().unwrap_or(0) >= 14);
+    assert!(worst < 1000.0, "a frame took {worst:.0} ms");
+    assert!(t["slowestMs"].as_f64().unwrap_or(0.0) < 500.0, "{t}");
 }
