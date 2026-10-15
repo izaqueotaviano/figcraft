@@ -133,6 +133,9 @@ pub(crate) struct Rec {
     last: Vec<egui::epaint::ClippedShape>,
     /// Textures the last frame freed (they went after it was painted).
     freed: Vec<TextureId>,
+    /// What the presenter's own window drew last and its size ([`Rec::child_frame`]).
+    child: Vec<egui::epaint::ClippedShape>,
+    child_size: egui::Vec2,
 }
 
 impl Rec {
@@ -144,7 +147,7 @@ impl Rec {
             size: vec2(1440.0, 900.0),
             repaint: None,
         };
-        let mut r = Self { u, raster: Raster::default(), last: Vec::new(), freed: Vec::new() };
+        let mut r = Self { u, raster: Raster::default(), last: Vec::new(), freed: Vec::new(), child: Vec::new(), child_size: vec2(1100.0, 760.0) };
         for _ in 0..3 {
             r.frame(Vec::new());
         }
@@ -171,6 +174,42 @@ impl Rec {
         out.textures_delta.clear();
         self.last = out.shapes.clone();
         out
+    }
+
+    /// One frame of the presenter's window of its own: a pass of the context under that window's
+    /// viewport id drawing [`crate::present::window::draw`], as eframe runs a deferred viewport's
+    /// callback. [`Rec::save_child`] writes what it drew.
+    pub fn child_frame(&mut self, size: egui::Vec2, events: Vec<Event>) {
+        self.u.time += 1.0 / 60.0;
+        let id = crate::present::window::viewport_id();
+        let mut viewports = egui::ViewportIdMap::default();
+        viewports.insert(id, egui::ViewportInfo::default());
+        let input = egui::RawInput {
+            viewport_id: id,
+            viewports,
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            time: Some(self.u.time),
+            events,
+            ..Default::default()
+        };
+        let app = &mut self.u.app;
+        let mut out = self.u.ctx.run_ui(input, |ui| crate::present::window::draw(app, ui));
+        self.raster.free(std::mem::take(&mut self.freed));
+        self.raster.feed(&out.textures_delta);
+        self.freed = out.textures_delta.free.iter().copied().collect();
+        out.textures_delta.clear();
+        self.child = out.shapes.clone();
+        self.child_size = size;
+    }
+
+    /// The presenter window's last frame as a PNG at `path` (1 pixel per point).
+    pub fn save_child(&self, path: &std::path::Path) {
+        let prims = self.u.ctx.tessellate(self.child.clone(), 1.0);
+        let img = self.raster.draw(&prims, 1.0, (self.child_size.x as usize, self.child_size.y as usize), Color32::from_gray(40));
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        img.save(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     }
 
     /// A click at `at`, then a few frames.
@@ -365,6 +404,77 @@ fn snapshots() {
     r.run("proto.preview", serde_json::json!({"start": a}));
     r.frames(40);
     r.save(&dir.join("pane.png"));
+}
+
+/// The prototype in a window of its own: the editor's window with the editor in it, and the
+/// presenter's window beside it (`FIGCRAFT_SNAPSHOTS=/some/dir cargo test -p figcraft-ui-egui --lib window_snapshots`).
+#[test]
+fn window_snapshots() {
+    let Some(dir) = gallery_dir() else { return };
+    let (mut r, [a, ..]) = demo();
+    // (A headless context has no window to give: this is a desktop's.)
+    r.u.ctx.set_embed_viewports(false);
+    r.run("proto.present", serde_json::json!({"start": a}));
+    crate::present::window::apply(&mut r.u.app, &r.u.ctx, true);
+    r.frames(3);
+    assert!(crate::present::window::is_open(&r.u.app), "the presentation is in a window of its own");
+    r.save(&dir.join("window-editor.png"));
+    let size = vec2(1100.0, 760.0);
+    for _ in 0..3 {
+        r.child_frame(size, Vec::new());
+    }
+    r.save_child(&dir.join("window-presenter.png"));
+    // The next screen, in the presenter's window only (the editor's window doesn't change).
+    r.child_frame(size, vec![Event::PointerMoved(Pos2::new(550.0, 400.0))]);
+    let k = |pressed| Event::Key { key: egui::Key::ArrowRight, physical_key: None, pressed, repeat: false, modifiers: Default::default() };
+    r.child_frame(size, vec![k(true), k(false)]);
+    for _ in 0..3 {
+        r.child_frame(size, Vec::new());
+    }
+    r.save_child(&dir.join("window-presenter-next.png"));
+}
+
+/// A video playing in the presenter: a synthetic clip (a gradient and a bar that moves with the
+/// picture's index) on a screen with a button that pauses it (`FIGCRAFT_SNAPSHOTS=/some/dir cargo
+/// test -p figcraft-ui-egui --lib video_snapshots`).
+#[test]
+fn video_snapshots() {
+    use base64::Engine as _;
+    let Some(dir) = gallery_dir() else { return };
+    let mut s = Session::new();
+    let id = |v: Value| crate::present_tests::id(&v);
+    let f = id(s.execute("frame.create", &serde_json::json!({"x": 0, "y": 0, "width": 390, "height": 760, "name": "Clip"})).unwrap());
+    s.execute("fill.set", &serde_json::json!({"ids": [f], "color": "#FFFFFF"})).unwrap();
+    let bytes = figcraft_media::testing::synthetic(320, 180, 60, 10);
+    let clip = id(s
+        .execute(
+            "image.place",
+            &serde_json::json!({
+                "data": base64::engine::general_purpose::STANDARD.encode(bytes), "video": true, "parent": f,
+                "name": "Clip", "x": 24, "y": 80, "width": 342
+            }),
+        )
+        .unwrap());
+    s.execute("text.create", &serde_json::json!({"parent": f, "text": "A video fill plays while its screen shows", "x": 24, "y": 360})).unwrap();
+    let button = id(s
+        .execute(
+            "shape.rectangle",
+            &serde_json::json!({"parent": f, "x": 24, "y": 640, "width": 342, "height": 56, "props": {"name": "Pause", "fill": "#1E1E1E"}}),
+        )
+        .unwrap());
+    s.execute(
+        "proto.interaction.add",
+        &serde_json::json!({"id": button, "trigger": {"type": "onClick"}, "action": {"type": "mediaPlayPause", "target": clip}}),
+    )
+    .unwrap();
+    let mut r = Rec::new(s);
+    r.run("proto.present", serde_json::json!({"start": f}));
+    // A second and a half of playback (a frame of the harness is 1/60 s): the bar has moved on.
+    r.frames(90);
+    let media = r.u.app.inspect()["presenter"]["media"].clone();
+    let at = media["videos"][0]["position"].as_f64().unwrap_or(-1.0);
+    assert!(at > 1.0 && at < 2.0, "the clip plays by the player's time: {media}");
+    r.save(&dir.join("video-playing.png"));
 }
 
 /// [`demo`] for the chrome tests.
