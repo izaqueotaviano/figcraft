@@ -472,6 +472,8 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
                     pres.view.comments = v;
                 }
             }
+            // The presenter's other controls: hide UI, ...
+            crate::present::ux::set_options(app, p)?;
             // Colour picker on the selection's paint `{fills?, index?}`; null closes it.
             if let Some(v) = p.get("colorPicker") {
                 app.ui.picker = v.is_object().then(|| crate::colorpicker::PickerTarget::Paint {

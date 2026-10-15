@@ -180,6 +180,8 @@ icons! {
     LiveShared,
     /// A file of yours on a server that only you get into: a point inside a closed ring.
     LivePrivate,
+    /// The presenter's screens panel: a column of small screens beside the page.
+    Screens,
 }
 
 /// Points along a circular arc from angle `a0` to `a1` (radians, y down: increasing is clockwise).
@@ -953,6 +955,15 @@ fn draw(p: &P, icon: Icon) {
             p.circle(4.5, 11.5, 2.0);
             p.line(6.0, 10.0, 13.0, 3.0);
             p.poly(&[(8.5, 2.5), (13.5, 2.5), (13.5, 7.5)], false);
+        }
+        Screens => {
+            // The window, a column of three small screens at its left and the page beside them.
+            p.rect(2.5, 2.5, 13.5, 13.5, 1.0);
+            p.line(7.5, 3.0, 7.5, 13.0);
+            for y in [4.0, 7.0, 10.0] {
+                p.fill_rect(4.0, y, 6.5, y + 2.0, 0.0);
+            }
+            p.rect(9.0, 5.0, 12.0, 11.0, 0.0);
         }
         Preview => {
             // A window with a title strip and a play triangle in it.
