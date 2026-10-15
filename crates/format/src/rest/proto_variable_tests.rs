@@ -229,7 +229,7 @@ fn interactions_triggers_actions_and_transitions() {
     assert_eq!(its[2].trigger, Trigger::KeyPress { key: "Shift+A".into() }, "modifier keys make a combination");
     assert_eq!(its[2].actions, [Action::Back]);
     assert_eq!(its[3].trigger, Trigger::MouseEnter);
-    assert_eq!(its[3].actions, [Action::OpenUrl { url: "https://example.com".into() }]);
+    assert_eq!(its[3].actions, [Action::OpenUrl { url: "https://example.com".into(), new_tab: true }]);
     assert_eq!(its[4].trigger, Trigger::OnHover);
     assert_eq!(its[4].actions, [Action::SetVariable { variable: FLAG.into(), value: json!(false), expr: None }]);
     assert_eq!((its[4].transition, its[4].duration_ms), (Transition::Instant, 300));

@@ -337,7 +337,8 @@ pub struct Presenter {
     clock: f64,
     /// The layer the Inspect panel shows (the last one under the pointer).
     inspected: Option<NodeId>,
-    urls: Vec<String>,
+    /// Links the player is to open after its frame, each with whether it opens in a new tab.
+    urls: Vec<(String, bool)>,
     /// The editor's document as last copied (the player copies it again when it changes).
     source: Option<Arc<Document>>,
     /// Scrolling by dragging: what it scrolls and its offset when the drag began.
@@ -991,9 +992,9 @@ impl Presenter {
                 true
             }
             Action::CloseOverlay => self.close_overlay(now),
-            Action::OpenUrl { url } => {
+            Action::OpenUrl { url, new_tab } => {
                 if !url.trim().is_empty() {
-                    self.urls.push(url.clone());
+                    self.urls.push((url.clone(), *new_tab));
                 }
                 true
             }
@@ -1964,9 +1965,7 @@ fn poll_pads(app: &mut FigApp, p: &mut Presenter, ctx: &egui::Context) {
 
 /// After a player's frame: the links it opens and the widget clicks it took.
 fn finish(app: &mut FigApp, p: &mut Presenter) {
-    for u in p.urls.drain(..) {
-        app.services.open_url(&u);
-    }
+    media::open_links(app, p);
     if let Some(e) = p.click_widgets(&app.session) {
         app.toast(e);
     }
@@ -3043,6 +3042,9 @@ fn draw(p: &mut Presenter, painter: &egui::Painter, ctx: &egui::Context, l: &Lay
         ctx.request_repaint();
     }
 }
+
+#[path = "present_media.rs"]
+mod media;
 
 #[cfg(test)]
 #[path = "present_variables_tests.rs"]

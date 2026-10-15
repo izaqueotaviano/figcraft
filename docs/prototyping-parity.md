@@ -1,6 +1,6 @@
 # Prototyping parity
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-13 · **Change:** minor (core editor leftovers: delays on mouse triggers and manual overlay offsets; controller buttons on key/gamepad triggers, widgets that react in prototypes, `proto.evaluate` and the mode lookup rules pinned) · **Target:** Figma Design (desktop app 126.10.7)
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-15 · **Change:** minor (open link in the same tab: an "Open in a new tab" setting on the action, REST `openInNewTab`, same-tab navigation in the web version; which addresses a link may open) · **Target:** Figma Design (desktop app 126.10.7)
 
 **Breadth ~92%, ready ~74% (estimated).** Every Figma trigger except media, every action except
 media control, every transition and easing exist; key/gamepad triggers take controller buttons,
@@ -51,7 +51,9 @@ case pins the current behaviour).
 | Overlays stack; swap overlay replaces the top one; close overlay closes it | pass | `overlays_stack_swap_close_and_go_with_navigation` |
 | Manual overlay position relative to the hotspot | **added** | `offset: [x, y]` on the action, from the top-left of the layer that opens it (X / Y fields in the interaction editor; without one, below that layer); `present_delay_tests` |
 | Delay on mouse enter / leave / down / up | **added** | `delayMs` on the interaction, a Delay field in the editor; fires once after the delay while its screen or overlay still shows (a pointer that leaves early: silent, it still fires); `mouse_triggers_wait_out_their_delay` |
-| Open link | pass | always a new tab or browser window (opening in place would leave the prototype) |
+| Open link | pass | a new tab or browser window by default |
+| Open link: "Open in a new tab" (the REST schema's `openInNewTab`), on by default; off opens the link in the page the prototype runs in | **added** | only the web version has a page to replace (same-tab navigation through the browser's `location`); the desktop app opens the system browser either way, and the editor's checkbox says so; files and commands without the field mean a new tab, as before; `crates/doc/src/proto_link_tests.rs`, `crates/engine/src/proto_link_tests.rs`, `crates/format/src/rest/link_tests.rs`, `crates/ui-egui/src/present_link_tests.rs` |
+| Open link: which addresses open | **added** (silent) | only web (`http`, `https`), mail, phone and text-message links open, an address without a scheme as `https://…`; `javascript:`, `file:`, `data:` and the schemes other software registers don't (the viewer is told), since a file's link runs on the viewer's machine and, in the browser, a same-tab `javascript:` link would run in the app's own page |
 | Change to: another variant of the instance, in place, with the interaction's animation | pass | `interactive_components_change_in_place` |
 | Interactive components: every instance plays the interactions of the variant it shows; an interaction on the instance with the same trigger wins | **fixed** | instances played only interactions copied onto them when they were placed: an instance placed before its main got interactions did nothing, and one placed after kept the first variant's interactions after changing (a toggle went on but never off). New instances no longer copy them, and copies in older files give way to the variant shown; `instances_play_their_variants_interactions` |
 | Change to on a layer inside a nested instance changes the instance whose variant set holds the destination | **fixed** | the innermost instance (an icon inside a button) was changed instead |
@@ -90,7 +92,7 @@ case pins the current behaviour).
 | Hotspot hints, inspect panel in the presenter, comments in the presenter | done | |
 | Preview pane following edits live | done | |
 | Edit interactions on several layers at once | done | |
-| Opening a link in place | missing | |
+| Opening a link in place (web version) | done | the interaction editor's "Open in a new tab" checkbox; the `.fig` writer has no field it can verify for it and warns |
 | Controllers on macOS, Linux and FreeBSD | missing | the usual Rust controller library links the system's libudev on Linux; the pure-Rust desktop builds read none there yet |
 | Prototype in a separate window; mirror to a phone | missing | see [hardware-parity](hardware-parity.md) |
 | Video in prototypes | missing | needs video fills ([gaps](gaps.md) #12, #15) |
@@ -100,6 +102,7 @@ case pins the current behaviour).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | Open link in the same tab: the action takes "Open in a new tab" (on by default; files, commands and REST files without it mean a new tab, as before; REST `openInNewTab` read; the `.fig` writer has no field it can verify and warns). Off, the web version navigates the page itself; the desktop app opens the system browser either way (the editor's tooltip says so). Only web, mail, phone and text-message links open (`javascript:`, `file:`, `data:` and the like are refused with a note). Numbers unchanged. |
 | 2026-10-13 | minor | Prototyping, delays on mouse triggers and manual overlay offsets (M5): mouse enter, leave, down and up wait `delayMs` before their actions run (once while waiting; dropped when the screen or overlay they were on goes away; a pointer that leaves early doesn't cancel, the documentation is silent), and a manual overlay sits at `offset: [x, y]` from the top-left of the layer that opens it (without one, right below it, as before). Delay and X/Y fields in the interaction editor, the player on its own clock, REST import (`delay`, `overlayRelativePosition`), `.fig` import and export (the export's field for mouse delays is unchecked against other software). Numbers unchanged. |
 | 2026-10-12 | minor | Controller buttons on key/gamepad triggers (Controller menu, player polling on Windows and in the browser, REST import instead of skipping, control channel injection), widgets reacting to clicks in presented prototypes on the prototype's own copy, `proto.evaluate`; the mode lookup and set-variable-mode rules written as cases (they already held). Breadth 90% → 92%, ready unchanged at 74% (controllers on Windows and the browser only; no real prototype QA yet), 3–6 h → 2–5 h |
 | 2026-10-11 | minor | Behaviour suite from the public documentation (7 model tests, 12 player tests with 21 gestures) and its fixes: on drag follows its animation's direction and the pointer, key combinations, overlay timers from when they open, interactive components play their variant's interactions and change the right instance, physical springs that play until they settle, smart animate overshoots with the easing, fixed layers above scrolling content; added scroll to offsets. Breadth 88% → 90%, ready 70% → 74%, 5–9 h → 3–6 h |

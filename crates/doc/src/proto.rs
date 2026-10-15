@@ -545,6 +545,11 @@ pub enum Action {
     CloseOverlay,
     OpenUrl {
         url: String,
+        /// Open the link in a new browser tab (the default, and what files without the field
+        /// mean). Off: the link replaces the page the prototype runs in, in the web version; the
+        /// desktop app always opens the system browser.
+        #[serde(default = "crate::node::yes", alias = "newTab", alias = "openInNewTab", skip_serializing_if = "is_true")]
+        new_tab: bool,
     },
     /// Change an instance to another variant (interactive components).
     ChangeTo {
@@ -702,6 +707,37 @@ impl Action {
     }
 }
 
+/// Longest link the player opens (characters).
+pub const MAX_LINK: usize = 4096;
+
+/// The address an open-link action opens, or `None` for one that mustn't open: only web (`http`,
+/// `https`), mail, phone and text-message links open, since a file's link runs on the viewer's
+/// machine (`javascript:`, `file:`, `data:` and the other schemes people register handlers for
+/// don't). An address without a scheme is a web address (`example.com/a` opens as
+/// `https://example.com/a`). Control characters anywhere refuse it, since browsers drop some of
+/// them before reading the scheme (`java\tscript:`).
+pub fn web_link(url: &str) -> Option<String> {
+    let u = url.trim();
+    if u.is_empty() || u.chars().count() > MAX_LINK || u.chars().any(char::is_control) {
+        return None;
+    }
+    // A scheme is letters, digits, `+`, `-` and `.` before a colon that comes before any path,
+    // query or fragment.
+    let head = u.split(['/', '?', '#']).next().unwrap_or(u);
+    match head.split_once(':') {
+        Some((scheme, _)) if !scheme.is_empty() => {
+            let ok_chars = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+            let allowed = ["http", "https", "mailto", "tel", "sms"].iter().any(|a| scheme.eq_ignore_ascii_case(a));
+            (ok_chars && allowed).then(|| u.to_string())
+        }
+        // `:80/x` and `//host` aren't addresses either.
+        Some(_) => None,
+        None if u.starts_with("//") => None,
+        None => Some(format!("https://{u}")),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Interaction {
     #[serde(default)]
@@ -742,6 +778,10 @@ fn is_zero(v: &u32) -> bool {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 fn is_origin(p: &[f64; 2]) -> bool {

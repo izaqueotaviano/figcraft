@@ -2114,7 +2114,13 @@ impl<'d> Exporter<'d> {
             }
             Action::Back => plain("BACK"),
             Action::CloseOverlay => plain("CLOSE"),
-            Action::OpenUrl { url } => Some(o(vec![("connectionType", e("URL")), ("connectionURL", s(url))])),
+            Action::OpenUrl { url, new_tab } => {
+                if !new_tab {
+                    // The schema above has no field for it (and none is invented here).
+                    self.warn("links that open in the same tab were written as links that open in a new tab");
+                }
+                Some(o(vec![("connectionType", e("URL")), ("connectionURL", s(url))]))
+            }
             Action::SetVariable { .. } | Action::SetVariableMode { .. } | Action::Conditional { .. } => {
                 self.warn("variable and conditional prototype actions were left out");
                 None

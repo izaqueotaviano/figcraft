@@ -26,6 +26,8 @@ mod conditional_tests;
 mod effects_tests;
 #[cfg(test)]
 mod gamepad_tests;
+#[cfg(test)]
+mod link_tests;
 pub(crate) mod props;
 pub(crate) mod proto;
 #[cfg(test)]
