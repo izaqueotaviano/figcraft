@@ -84,6 +84,18 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         "file.saveVersion" => crate::versions::start_save(app),
         "branch.create" => crate::versions::start_branch(app),
         "file.export" | "file.exportSvg" => app.ui.export_preview = true,
+        // The PDF goes where the user picks (the command alone only returns its bytes).
+        "file.exportFramesPdf" => {
+            let name = app.session.doc().map(|d| d.name.clone()).unwrap_or_else(|_| "Untitled".into());
+            let title = i18n::command(id, "Export frames to PDF").to_string();
+            if let Some(p) = app.services.pick_save(&title, &format!("{name}.pdf"), &["pdf"]) {
+                let path = p.to_string_lossy().to_string();
+                if app.run(id, json!({"path": path})).is_some() {
+                    let file = p.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                    app.toast(trf("Exported {file}", &[("file", &file)]));
+                }
+            }
+        }
         "edit.copyAsCss" => {
             let ids = app.session.selection();
             if let (Some(first), Ok(doc)) = (ids.first(), app.session.doc()) {
@@ -125,6 +137,39 @@ pub fn invoke(app: &mut FigApp, id: &str) {
         "edit.copyLink" => {
             let ids = app.session.selection();
             app.services.clipboard_set_text(&format!("figcraft://node/{}", ids.first().map(|i| i.0).unwrap_or(0)));
+            app.toast(tr("Copied link"));
+        }
+        // These change nothing on screen: say that they worked.
+        "edit.copyProperties" => {
+            if app.run(id, json!({})).is_some() {
+                app.toast(tr("Copied properties"));
+            }
+        }
+        "edit.setDefaultProperties" => {
+            if app.run(id, json!({})).is_some() {
+                app.toast(tr("New layers will use these properties"));
+            }
+        }
+        _ if id == "select.matching" || id.starts_with("select.same") => {
+            let before = app.session.selection();
+            if app.run(id, json!({})).is_some() && app.session.selection() == before {
+                app.toast(tr("No other layers match"));
+            }
+        }
+        // Items that need a value ask for it.
+        "file.rename" => {
+            app.ui.left_tab = crate::LeftTab::File;
+            app.ui.left_collapsed = false;
+            app.ui.rename_file = true;
+        }
+        "pref.nudge" => app.ui.preferences = true,
+        "text.link" => {
+            let ids = app.session.selection();
+            app.ui.prompt = Some(crate::dialogs::Prompt::new(crate::dialogs::PromptKind::Link, ids));
+        }
+        "vector.offset" => {
+            let ids = app.session.selection();
+            app.ui.prompt = Some(crate::dialogs::Prompt::new(crate::dialogs::PromptKind::Offset, ids));
         }
         "edit.findReplace" => app.ui.find = Some((String::new(), String::new())),
         // From a menu the link is pasted into the Join dialog (`collab.join {link}` joins directly).
@@ -166,6 +211,104 @@ pub fn available(id: &str) -> bool {
     !id.is_empty() && (figcraft_engine::find_command(id).is_some() || UI_COMMANDS.contains(&id))
 }
 
+/// Whether menu item `id` can be clicked now.
+pub fn enabled(app: &FigApp, id: &str) -> bool {
+    why_disabled(app, id).is_none()
+}
+
+/// Menu items that act on the selection, by id prefix (they are greyed with nothing selected).
+const ON_SELECTION_PREFIXES: &[&str] = &["align.", "distribute.", "arrange.", "bool.", "layout.", "text.", "vector.", "component.", "select.same"];
+
+/// Menu items that act on the selection, one by one.
+const ON_SELECTION: &[&str] = &[
+    "edit.cut",
+    "edit.copy",
+    "edit.pasteReplace",
+    "edit.duplicate",
+    "edit.delete",
+    "edit.copyProperties",
+    "edit.setDefaultProperties",
+    "edit.copyAsText",
+    "edit.copyAsCss",
+    "edit.copyAsSvg",
+    "edit.copyAsPng",
+    "edit.copyLink",
+    "select.none",
+    "select.matching",
+    "select.children",
+    "select.parent",
+    "view.zoomSelection",
+    "object.frameSelection",
+    "object.group",
+    "object.ungroup",
+    "object.removeFrame",
+    "object.resizeToFit",
+    "object.mask",
+    "object.releaseMask",
+    "object.setThumbnail",
+    "object.flipH",
+    "object.flipV",
+    "object.rotate180",
+    "object.rotateLeft",
+    "object.rotateRight",
+    "object.rasterize",
+    "object.toggleVisible",
+    "object.toggleLock",
+    "object.hideOthers",
+    "object.removeFill",
+    "object.removeStroke",
+    "object.swapFillStroke",
+    "object.rename",
+    "object.batchRename",
+    "object.moveToPage",
+];
+
+/// Whether menu item `id` acts on the selected layers.
+pub(crate) fn acts_on_selection(id: &str) -> bool {
+    ON_SELECTION.contains(&id) || ON_SELECTION_PREFIXES.iter().any(|p| id.starts_with(p))
+}
+
+/// Why menu item `id` is greyed now (an English key for [`tr`]), or `None` when it can be
+/// clicked. A click on an item that can't do anything would only flash the menu shut.
+pub fn why_disabled(app: &FigApp, id: &str) -> Option<&'static str> {
+    if !available(id) {
+        return Some(tr_noop("Not available yet"));
+    }
+    let s = &app.session;
+    // Without an open file the engine says what's missing.
+    let Ok(ds) = s.ds() else { return None };
+    let doc = &ds.doc;
+    let sel = &ds.selection;
+    if acts_on_selection(id) && sel.is_empty() {
+        return Some(tr_noop("Select a layer first"));
+    }
+    let page_index = doc.pages.iter().position(|p| *p == ds.page);
+    let has_children = |id: &figcraft_doc::NodeId| doc.node(*id).is_some_and(|n| !n.children.is_empty());
+    let in_layer = |id: &figcraft_doc::NodeId| {
+        doc.node(*id).and_then(|n| n.parent).and_then(|p| doc.node(p)).is_some_and(|p| !matches!(p.kind, figcraft_doc::NodeKind::Page { .. }))
+    };
+    let why = match id {
+        "edit.undo" if s.undo_depth().0 == 0 => tr_noop("Nothing to undo"),
+        "edit.redo" if s.undo_depth().1 == 0 => tr_noop("Nothing to redo"),
+        "edit.pasteProperties" if s.clipboard.props.is_none() => tr_noop("Copy a layer's properties first"),
+        "file.revert" if ds.path.is_none() => tr_noop("The file hasn't been saved yet"),
+        "plugins.runLast" if s.plugins.last.is_none() => tr_noop("No plugin has run yet"),
+        "vector.deleteHeal" if ds.vector_edit.is_none() => tr_noop("Edit a vector's points first"),
+        "view.prevPage" if page_index.is_none_or(|i| i == 0) => tr_noop("This is the first page"),
+        "view.nextPage" if page_index.is_none_or(|i| i + 1 >= doc.pages.len()) => tr_noop("This is the last page"),
+        "view.prevFrame" | "view.nextFrame" if doc.top_frames(ds.page).is_empty() => tr_noop("This page has no frames"),
+        "object.moveToPage" if doc.pages.len() < 2 => tr_noop("The file has only one page"),
+        "select.children" if !sel.iter().any(has_children) => tr_noop("The selection has no layers inside it"),
+        "select.parent" if !sel.iter().any(in_layer) => tr_noop("The selection is at the top of the page"),
+        "layers.collapseAll" if app.ui.expanded.is_empty() => tr_noop("No layers are expanded"),
+        "view.panelWidths" if app.ui.left_width == crate::PANEL_DEFAULT && app.ui.right_width == crate::PANEL_DEFAULT => {
+            tr_noop("The panels are at their default widths")
+        }
+        _ => return None,
+    };
+    Some(why)
+}
+
 /// Draw one level of the main menu: `prefix` is the menu path ("File", "Edit/Copy as").
 fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
     let t = Tokens::get(ui.ctx());
@@ -192,11 +335,24 @@ fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
                 }
                 continue;
             }
+            if m.id == "object.moveToPage" && enabled(app, m.id) {
+                if move_to_page_menu(app, ui, prefix, m.label, &i18n::menu_item(m.id, m.label), &t) {
+                    return true;
+                }
+                continue;
+            }
             // One window in the browser.
-            let enabled = available(m.id) && !(m.id == "window.new" && ui.ctx().embed_viewports());
+            let why = if m.id == "window.new" && ui.ctx().embed_viewports() { Some(tr_noop("Not available yet")) } else { why_disabled(app, m.id) };
             let checked = figcraft_engine::cmd::view::checked(&app.session, m.id).unwrap_or(false);
-            if item(ui, &i18n::menu_item(m.id, m.label), crate::shortcuts::shortcut(m.id).unwrap_or(""), enabled, checked, &t) && enabled {
-                clicked = Some(m.id);
+            let label = i18n::menu_item(m.id, m.label);
+            let resp = item_response(ui, &label, crate::shortcuts::shortcut(m.id).unwrap_or(""), why.is_none(), checked, 0.0, &t);
+            match why {
+                // Greyed: the pointer says why instead of the click flashing the menu shut.
+                Some(why) => {
+                    resp.on_hover_text(tr(why));
+                }
+                None if resp.clicked() => clicked = Some(m.id),
+                None => {}
             }
         } else if let Some(rest) = m.menu.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
             let sub = rest.split('/').next().unwrap_or(rest).to_string();
@@ -215,6 +371,30 @@ fn menu_level(app: &mut FigApp, ui: &mut Ui, prefix: &str) -> bool {
         return true;
     }
     false
+}
+
+/// Object ▸ Move to page: the file's other pages; picking one moves the selection there.
+fn move_to_page_menu(app: &mut FigApp, ui: &mut Ui, prefix: &str, key: &str, label: &str, t: &Tokens) -> bool {
+    let pages: Vec<(figcraft_doc::NodeId, String)> = app
+        .session
+        .ds()
+        .map(|ds| ds.doc.pages.iter().filter(|p| **p != ds.page).filter_map(|p| ds.doc.node(*p).map(|n| (*p, n.name.clone()))).collect())
+        .unwrap_or_default();
+    let picked = submenu(ui, prefix, &format!("{prefix}/{key}"), label, t, |ui| {
+        let mut picked = None;
+        for (id, name) in &pages {
+            if item(ui, name, "", true, false, t) {
+                picked = Some((*id, name.clone()));
+            }
+        }
+        picked
+    });
+    let Some((page, name)) = picked else { return false };
+    let ids = app.session.selection();
+    if app.run("object.moveToPage", json!({"ids": ids, "page": page})).is_some() {
+        app.toast(trf("Moved to {name}", &[("name", &name)]));
+    }
+    true
 }
 
 /// File ▸ Open recent: the recent files (greyed when the file is gone) and Clear recent. `key` is
@@ -309,6 +489,11 @@ pub(crate) fn item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, chec
 
 /// A menu row whose label starts `indent` pixels further in (nested layers).
 fn indented_item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checked: bool, indent: f32, t: &Tokens) -> bool {
+    item_response(ui, label, shortcut, enabled, checked, indent, t).clicked()
+}
+
+/// A menu row (see [`indented_item`]) and its response.
+fn item_response(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checked: bool, indent: f32, t: &Tokens) -> egui::Response {
     let w = ui.available_width();
     let (r, resp) = ui.allocate_exact_size(vec2(w, 28.0), Sense::click());
     a11y::menu_item(&resp, label, shortcut, checked.then_some(true));
@@ -334,7 +519,7 @@ fn indented_item(ui: &mut Ui, label: &str, shortcut: &str, enabled: bool, checke
     if let Some(k) = keys {
         ui.painter().galley(pos2(r.max.x - 10.0 - k.size().x, r.center().y - k.size().y / 2.0), k, col);
     }
-    resp.clicked()
+    resp
 }
 
 fn submenu_item(ui: &mut Ui, label: &str, t: &Tokens) -> egui::Response {
@@ -367,7 +552,7 @@ fn over_menu(ctx: &egui::Context) -> bool {
     ctx.input(|i| i.pointer.interact_pos()).and_then(|p| ctx.layer_id_at(p)).is_some_and(|l| l.order == egui::Order::Foreground)
 }
 
-const TOP_MENUS: &[&str] = &[
+pub(crate) const TOP_MENUS: &[&str] = &[
     tr_noop("File"),
     tr_noop("Edit"),
     tr_noop("View"),

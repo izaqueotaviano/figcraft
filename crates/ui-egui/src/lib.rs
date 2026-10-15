@@ -116,6 +116,8 @@ mod live_tests;
 #[cfg(test)]
 mod live_text_tests;
 #[cfg(test)]
+mod menu_sweep_tests;
+#[cfg(test)]
 mod online_tests;
 #[cfg(test)]
 mod open_issues_tests;
@@ -296,6 +298,10 @@ pub struct UiState {
     /// The tab the About window shows.
     pub about_tab: dialogs::AboutTab,
     pub preferences: bool,
+    /// File ▸ Rename: the layers panel's file name field takes the keyboard next frame.
+    pub rename_file: bool,
+    /// A menu item's one-value question (Create link, Offset path).
+    pub prompt: Option<dialogs::Prompt>,
     pub shortcuts_panel: bool,
     /// The Keyboard shortcuts panel's tab and search text.
     pub shortcuts_tab: figcraft_engine::keymap::Group,
@@ -413,6 +419,8 @@ impl Default for UiState {
             about: false,
             about_tab: dialogs::AboutTab::About,
             preferences: false,
+            rename_file: false,
+            prompt: None,
             shortcuts_panel: false,
             shortcuts_tab: figcraft_engine::keymap::Group::Essential,
             shortcuts_query: String::new(),
@@ -662,8 +670,15 @@ impl FigApp {
                     self.services.save_prefs(&self.session.prefs);
                 }
                 "focus.region" => self.ui.nav.step(r.data.get("step").and_then(Value::as_i64).unwrap_or(1).clamp(-4, 4) as i32),
-                "panel.layers" => self.ui.left_tab = LeftTab::File,
-                "panel.assets" => self.ui.left_tab = LeftTab::Assets,
+                // Showing a panel of the left sidebar opens the sidebar too.
+                "panel.layers" => {
+                    self.ui.left_tab = LeftTab::File;
+                    self.ui.left_collapsed = false;
+                }
+                "panel.assets" => {
+                    self.ui.left_tab = LeftTab::Assets;
+                    self.ui.left_collapsed = false;
+                }
                 "panel.versionHistory" => versions::open(self),
                 "view.devCompare" => {
                     self.ui.dev.compare = r.data.get("id").and_then(figcraft_engine::params::id_of).map(dev_compare::CompareView::new);
