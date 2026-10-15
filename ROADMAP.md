@@ -13,7 +13,7 @@ start with [`docs/gaps.md`](docs/gaps.md).
 
 | | Value | Kind |
 |---|---|---|
-| Menu/command breadth | **100%** (211 / 211) | measured, [`docs/parity-checklist.md`](docs/parity-checklist.md) (`cargo xtask parity`) |
+| Menu/command breadth | **100%** (212 / 212) | measured, [`docs/parity-checklist.md`](docs/parity-checklist.md) (`cargo xtask parity`) |
 | Feature breadth | **~85%** (core editor ~94%) | estimated, [`docs/target-app-parity.md`](docs/target-app-parity.md) |
 | Ready for real work | **~53%** | estimated, same doc (written dimension weights and scores) |
 | Essentials user | **~59%** | estimated: core features 77.8% × 0.92 launch/stability × 0.94 discoverability × 0.88 opening files people send ([method](docs/target-app-parity.md#essentials-user)) |
