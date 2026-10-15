@@ -28,7 +28,7 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 | 12 | Video decoders beyond Motion-JPEG and animated images (H.264, HEVC, VP9, AV1; video fills, media triggers and actions landed 2026-10-15); HEIC images | File format | 5–10 | [file-format-parity](file-format-parity.md) |
 | 13 | Vector tail: none left (boolean hit testing on the result landed 2026-10-11) | Feature | — | [target-app-parity](target-app-parity.md) |
 | 14 | Variables: extended collections checked on real libraries (the tail landed 2026-10-12) | Feature | 0–1 | [components-parity](components-parity.md) |
-| 15 | Prototyping: controllers on macOS, Linux and FreeBSD, real prototype QA (media triggers and actions, controller buttons on key/gamepad triggers, widgets in prototypes landed) | Feature | 2–5 | [prototyping-parity](prototyping-parity.md) |
+| 15 | Prototyping: controllers on macOS, Linux and FreeBSD, real prototype QA (media triggers and actions, presenter controls and the prototype in a window of its own, controller buttons on key/gamepad triggers, widgets in prototypes landed) | Feature | 2–5 | [prototyping-parity](prototyping-parity.md) |
 | 16 | Dev Mode: import lines inside generated layer trees; the editor extension is left to the MCP server (code connect, Dev Mode plugins and dev resources landed) | Feature | 0–1 | [dev-mode-parity](dev-mode-parity.md) |
 | 17 | Branching: branches in live sessions, lists other than fills, strokes and effects merged whole (a branch's own version history and per-item list merges landed 2026-10-12) | Feature | 1–2 | [collaboration-parity](collaboration-parity.md) |
 | 18 | Display P3 on screen: blocked upstream (egui-wgpu picks an 8-bit sRGB surface); gamut warning and soft-proof sRGB landed, as did several windows | Hardware | 4–8 | [hardware-parity](hardware-parity.md) |
@@ -310,6 +310,13 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   (`crates/ui-egui/src/present_media_tests.rs`, `crates/media/src/clock_tests.rs`,
   `crates/engine/src/video_tests.rs`, `crates/format/src/rest/media_tests.rs`). What plays is
   limited by the decoders (gap 12).
+- **Landed (2026-10-15):** presenter controls and the prototype in a window of its own (`present_chrome.rs`,
+  `present_panel.rs`, `present_window.rs`): the presenter's keys in one table with a `?` list, "3 / 12"
+  with previous and next, Hide UI, a background colour for the viewer and a screens panel with
+  thumbnails; Options ▸ Open in new window (and the preview pane's button) plays the prototype in an
+  operating-system window of its own while the editor keeps working (the browser build, a screen
+  reader and secondary windows keep the full-window presenter and say why). See
+  [Presenter controls](prototyping-parity.md#presenter-controls).
 - **Landed (2026-10-12):** key/gamepad triggers take controller buttons (`Gamepad A` … `Gamepad
   Home`, the standard layout's 17 buttons; a Controller menu beside the key field; REST files'
   controller triggers import); the player reads controllers on Windows and in the browser (Gamepad
@@ -319,7 +326,7 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
   `crates/ui-egui/src/present_tail_tests.rs`, `crates/format/src/rest/gamepad_tests.rs`).
 - **Missing:** controllers on macOS, Linux and FreeBSD (the usual Rust controller library links
   libudev on Linux; a pure-Rust reader per platform, or an owner decision on that dependency);
-  PlayStation and Switch button labels; checks on real prototypes (including ones with video).
+  PlayStation and Switch button labels; checks on real prototypes (including ones with video); the presenter's own window seen on a real desktop (macOS, Windows, Wayland; so far headless and on a virtual X11 display).
 - **Estimate:** 2–5 h (controllers off Windows 1–2 h, real prototype QA 1–3 h).
 
 ### 16. Dev Mode: the tail after dev resources
@@ -412,6 +419,7 @@ No alpha blockers: the alpha gate in [`roadmap.md`](roadmap.md#alpha-gate) passe
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | Gap 15: the presenter's controls (shortcut list, screen X of Y, hide UI, background colour, screens panel) and the prototype in a window of its own landed, merged with the fluency and video branches (integration). The window is checked headless and on a virtual X11 display, not yet on a real desktop. Ranks and hours unchanged |
 | 2026-10-15 | minor | Gap 7 evidence: canvas panning reuses an overscan render (no bare strip of page background while scrolling; 300 scroll frames now 26 renders and a fifth of the texture uploads), zooming renders half-resolution drafts, and view changes no longer rebuild the panels' caches. Gap 4: main menu items that can't act are greyed with the reason; items that need a value ask for it. Ranks and hours unchanged |
 | 2026-10-15 | minor | Gaps 12 and 15: video fills, `crates/media` (Motion-JPEG in AVI, MOV and MP4, animated GIF, WebP and PNG; every other codec refused by name; no sound) and the media triggers and actions in prototypes landed. Gap 12 is now the decoders (H.264, HEVC, VP9, AV1) and HEIC, 5–10 h unchanged (it assumed a decoder library); gap 15 is controllers off Windows and real prototype QA, 2–5 h unchanged. Ranking unchanged |
 | 2026-10-13 | minor | Gap 1: the experimental `.fig` export writes instance sizes (resized, filling an auto layout, scaled), variables with modes and bindings, shared styles and variable-width strokes, and the import reads them back. Checked by opening written files in other software: resized and scaled instances keep their size and lay their layers out for it, variables with their modes and colour bindings resolve there (a frame set to another mode shows that mode's colours, also inside instances), colour, text, effect and grid styles are listed, and variable-width strokes that are the same on both sides of the path draw with their width; number, string and boolean bindings and bindings on effects, layout guides and gradient stops come across as the values they give but did not show as bound there (their entries now also name the layer field they set, not yet checked there), and strokes wider on one side of the path are written as filled outlines, no longer editable strokes there (the stroke itself is kept as plugin data and our own import puts it back; not yet checked there). Hours and the ranking unchanged |
