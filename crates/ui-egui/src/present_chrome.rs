@@ -614,6 +614,17 @@ pub struct Ux {
     pub panel_seen: Option<NodeId>,
     /// The screens panel's thumbnails.
     pub thumbs: super::panel::Thumbs,
+    /// The presentation plays in a window of its own ([`super::window`]), the one that was the
+    /// active file's when it moved there.
+    pub window: bool,
+    pub window_doc: u64,
+    /// Asked for from the Options menu: play in a window of its own (true) or in the editor's
+    /// window (false), when the frame ends.
+    pub window_request: Option<bool>,
+    /// Control channel input events for the presenter window (`ui.input {viewport: "present"}`).
+    pub input: Vec<egui::Event>,
+    /// How many frames the presenter window has drawn (0: not open yet).
+    pub drawn: u32,
     /// How far the hidden bar has slid in, 0 (away) to 1 (all the way), and when it last moved.
     pub reveal: f32,
     pub reveal_at: f64,

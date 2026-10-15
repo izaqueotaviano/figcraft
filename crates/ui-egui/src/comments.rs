@@ -818,6 +818,10 @@ fn escape(app: &mut FigApp, ctx: &egui::Context) -> bool {
 
 /// The thread popover and the draft composer, floating next to their pins on the canvas.
 pub fn popovers(app: &mut FigApp, ctx: &egui::Context) {
+    // A presenter window that shows comments owns the open thread.
+    if crate::present::window::owns_comments(app) {
+        return;
+    }
     if escape(app, ctx) {
         return;
     }

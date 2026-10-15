@@ -103,6 +103,9 @@ pub fn guard(app: &mut FigApp, ctx: &Context, f: impl FnOnce(&mut FigApp)) {
 
 /// Control-channel input events (`ui.input`) for the window `viewport` draws next.
 pub fn take_input(app: &mut FigApp, viewport_id: ViewportId) -> Vec<egui::Event> {
+    if let Some(events) = crate::present::window::take_input(app, viewport_id) {
+        return events;
+    }
     match app.windows.list.iter_mut().find(|w| viewport(w.id) == viewport_id) {
         Some(w) => std::mem::take(&mut w.pane.control_input),
         None if viewport_id == ViewportId::ROOT => std::mem::take(&mut app.control_input),
@@ -412,6 +415,8 @@ pub(crate) fn repaint_others(app: &FigApp, ctx: &Context) {
 
 /// Keep the other windows open (each draws itself when it needs to).
 pub(crate) fn show(app: &FigApp, ctx: &Context) {
+    // The prototype's window, when it plays in one of its own.
+    crate::present::window::keep_open(app, ctx);
     for w in &app.windows.list {
         let title = title_of(app.session.docs.iter().find(|d| Some(d.uid) == w.active));
         let mut b = ViewportBuilder::default().with_title(title).with_inner_size(w.size).with_min_inner_size([800.0, 500.0]).with_drag_and_drop(true);

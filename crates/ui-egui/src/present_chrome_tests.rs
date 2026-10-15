@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use super::ux::{self, Act, SHORTCUTS, With};
 use crate::present_tests::{Ui, id};
 
-fn ex(s: &mut Session, cmd: &str, p: Value) -> Value {
+pub(crate) fn ex(s: &mut Session, cmd: &str, p: Value) -> Value {
     s.execute(cmd, &p).unwrap_or_else(|e| panic!("{cmd} {p}: {e}"))
 }
 
@@ -19,7 +19,7 @@ fn frame(s: &mut Session, name: &str, x: f64) -> NodeId {
 }
 
 /// Screens A, B and C side by side (no device); A presented.
-fn abc() -> (Ui, [NodeId; 3]) {
+pub(crate) fn abc() -> (Ui, [NodeId; 3]) {
     let mut s = Session::new();
     let ids = [("A", 0.0), ("B", 400.0), ("C", 800.0)].map(|(n, x)| frame(&mut s, n, x));
     let mut u = Ui::new(s);
@@ -27,11 +27,11 @@ fn abc() -> (Ui, [NodeId; 3]) {
     (u, ids)
 }
 
-fn presenter(u: &Ui) -> Value {
+pub(crate) fn presenter(u: &Ui) -> Value {
     u.app.inspect()["presenter"].clone()
 }
 
-fn screen(u: &Ui) -> String {
+pub(crate) fn screen(u: &Ui) -> String {
     presenter(u)["name"].as_str().unwrap_or_default().to_string()
 }
 

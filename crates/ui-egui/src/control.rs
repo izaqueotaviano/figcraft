@@ -70,10 +70,11 @@ fn pending(ctx: &Context) -> std::sync::Arc<std::sync::Mutex<Vec<PendingShot>>> 
     ctx.data_mut(|d| d.get_temp_mut_or_insert_with(egui::Id::new("pending_shots"), || std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))).clone())
 }
 
-pub fn drain(app: &mut FigApp, ctx: &Context) {
-    let now = ctx.input(|i| i.time);
+/// Finish the screenshots that arrived in the input of the window drawing now (a window's capture
+/// can arrive in any window's input; each window that can be asked for one calls this: the main
+/// window through [`drain`], the presenter's own window from its frame).
+pub(crate) fn collect_shots(ctx: &Context) {
     let list = pending(ctx);
-    // Finish screenshots that arrived (a window's capture can arrive in any window's input).
     let shots: Vec<(egui::ViewportId, std::sync::Arc<egui::ColorImage>)> = ctx.input(|i| {
         i.events
             .iter()
@@ -93,6 +94,18 @@ pub fn drain(app: &mut FigApp, ctx: &Context) {
             false
         });
     }
+    // The capture of this window arrives some frames after it was asked for: keep drawing until then.
+    let me = ctx.viewport_id();
+    if me != egui::ViewportId::ROOT && list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().any(|p| p.viewport == me) {
+        ctx.request_repaint();
+    }
+}
+
+pub fn drain(app: &mut FigApp, ctx: &Context) {
+    let now = ctx.input(|i| i.time);
+    let list = pending(ctx);
+    // Finish screenshots that arrived.
+    collect_shots(ctx);
     let reqs = std::mem::take(&mut app.control_queue);
     for r in reqs {
         if r.is_cancelled() {
@@ -111,9 +124,28 @@ pub fn drain(app: &mut FigApp, ctx: &Context) {
         }
         if r.method == "ui.screenshot" {
             let path = r.params.get("path").and_then(Value::as_str).unwrap_or("figcraft-screenshot.png").to_string();
-            let viewport = ctx.viewport_id();
+            // `viewport: "present"` captures the window the prototype plays in when it has one of its own.
+            let viewport = if r.params.get("viewport").and_then(Value::as_str) == Some("present") {
+                match crate::present::window::screenshot_viewport(app) {
+                    Ok(Some(vp)) => vp,
+                    Ok(None) => {
+                        // The window hasn't drawn yet: ask again with its first frame.
+                        ctx.request_repaint_of(crate::present::window::viewport_id());
+                        ctx.request_repaint();
+                        app.control_queue.push(r);
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = r.reply.send(ControlReply { id: r.id, result: Err(e) });
+                        continue;
+                    }
+                }
+            } else {
+                ctx.viewport_id()
+            };
             list.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(PendingShot { id: r.id, path, reply: r.reply, since: now, viewport });
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            ctx.request_repaint_of(viewport);
             continue;
         }
         let res = handle(app, ctx, &r.method, &r.params);
@@ -133,6 +165,10 @@ pub fn drain(app: &mut FigApp, ctx: &Context) {
     });
     if !list.is_empty() {
         ctx.request_repaint();
+        // (A window of its own draws only when asked to.)
+        if list.iter().any(|p| p.viewport == crate::present::window::viewport_id()) {
+            ctx.request_repaint_of(crate::present::window::viewport_id());
+        }
     }
 }
 
@@ -324,8 +360,15 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
                     (None, None) => return Err("controller buttons go to a prototype that is playing: run proto.present or proto.preview".into()),
                 }
             }
-            app.control_input.extend(events);
-            ctx.request_repaint();
+            // `viewport: "present"`: the events go to the window the prototype plays in (when it has one
+            // of its own), as if they happened there; else to the window asked for.
+            if p.get("viewport").and_then(Value::as_str) == Some("present") {
+                crate::present::window::queue_input(app, events)?;
+                ctx.request_repaint_of(crate::present::window::viewport_id());
+            } else {
+                app.control_input.extend(events);
+                ctx.request_repaint();
+            }
             Ok(json!({"queued": list.len().min(256)}))
         }
         "ui.type" => {
@@ -474,6 +517,8 @@ pub fn handle(app: &mut FigApp, ctx: &Context, method: &str, p: &Value) -> Resul
             }
             // The presenter's other controls: hide UI, ...
             crate::present::ux::set_options(app, p)?;
+            // `presentWindow`: the prototype in a window of its own.
+            crate::present::window::set_from_control(app, ctx, p)?;
             // Colour picker on the selection's paint `{fills?, index?}`; null closes it.
             if let Some(v) = p.get("colorPicker") {
                 app.ui.picker = v.is_object().then(|| crate::colorpicker::PickerTarget::Paint {

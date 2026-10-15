@@ -535,7 +535,7 @@ fn blocked(app: &FigApp) -> bool {
         || u.variables.is_some()
         || u.export_preview
         || u.color_profile.is_some()
-        || u.present.is_some()
+        || crate::present::window::covers_window(app)
         || u.home
         || u.find.is_some()
         || !app.has_files()

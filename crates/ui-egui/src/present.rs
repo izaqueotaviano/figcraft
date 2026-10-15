@@ -48,6 +48,8 @@ use crate::widgets;
 // of their own; they work on the player's private state.
 #[path = "present_panel.rs"]
 pub(crate) mod panel;
+#[path = "present_window.rs"]
+pub(crate) mod window;
 #[path = "present_chrome.rs"]
 pub(crate) mod ux;
 
@@ -743,6 +745,7 @@ impl Presenter {
             "hideUi": self.view.hide_ui,
             "background": self.view.background.id(),
             "sidePanel": self.view.side_panel,
+            "window": self.ux.window,
             "thumbnails": {"kept": self.ux.thumbs.count(), "drawnLastFrame": self.ux.thumbs.drawn, "waiting": self.ux.thumbs.pending, "total": self.ux.thumbs.total, "slowestMs": self.ux.thumbs.slowest_ms},
             "barReveal": self.ux.reveal,
             "position": ux::position(self).map(|(i, n)| [i, n]),
@@ -1926,6 +1929,8 @@ enum BarAction {
     Help,
     /// Show or hide the screens panel.
     Screens,
+    /// Present in a window of its own (from the pane).
+    Window,
 }
 
 impl BarAction {
@@ -1940,19 +1945,29 @@ impl BarAction {
             BarAction::Inspect => "inspect",
             BarAction::Help => "help",
             BarAction::Screens => "screens",
+            BarAction::Window => "window",
         }
     }
 }
 
-/// The full-window presenter (while `app.ui.present` is set). Escape or Close ends it.
+/// The full-window presenter (while `app.ui.present` is set and plays in the editor's window).
+/// Escape or Close ends it.
 pub fn show(app: &mut FigApp, ui: &mut Ui) {
+    let Some(mut pres) = app.ui.present.take() else { return };
+    if run(app, ui, &mut pres) {
+        app.ui.present = Some(pres);
+    }
+}
+
+/// One frame of the presenter `pres` in `ui`: the editor's window, or the window of its own
+/// ([`window`]). False when the presentation ended.
+fn run(app: &mut FigApp, ui: &mut Ui, pres: &mut Presenter) -> bool {
     let ctx = ui.ctx().clone();
     let now = ctx.input(|i| i.time);
-    let Some(mut pres) = app.ui.present.take() else { return };
     if let Ok(ds) = app.session.ds() {
         pres.sync(&ds.doc, now);
     }
-    poll_pads(app, &mut pres, &ctx);
+    poll_pads(app, pres, &ctx);
     // (The controls note where they are drawn, panels and bar, from nothing each frame.)
     pres.ux.controls.clear();
     let mut action = None;
@@ -1963,7 +1978,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
     let typing = ctx.egui_wants_keyboard_input();
     if !typing {
         for act in ux::priority_acts(&ctx) {
-            ux::run(&mut pres, act, &ctx, now, false);
+            ux::run(pres, act, &ctx, now, false);
         }
     }
     // Hidden, the presenter's own controls give the window to the prototype.
@@ -1974,7 +1989,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
             .resizable(false)
             .exact_size(INSPECT_W)
             .frame(egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.border)))
-            .show(ui, |ui| inspect_panel(app, ui, &pres));
+            .show(ui, |ui| inspect_panel(app, ui, pres));
     }
     if pres.view.side_panel && !hidden {
         let t = Tokens::get(&ctx);
@@ -1982,10 +1997,10 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
             .resizable(false)
             .exact_size(panel::WIDTH)
             .frame(egui::Frame::NONE.fill(t.panel).stroke(Stroke::new(1.0, t.border)))
-            .show(ui, |ui| panel::show(&mut pres, ui, now));
+            .show(ui, |ui| panel::show(pres, ui, now));
     }
     egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-        action = player(&mut pres, ui, ui.max_rect(), now, Chrome { keys: !typing, hidden, ..FULL }).or(action);
+        action = player(pres, ui, ui.max_rect(), now, Chrome { keys: !typing, hidden, ..FULL }).or(action);
     });
     match action {
         Some(BarAction::Comments) => pres.view.comments = !pres.view.comments,
@@ -1994,24 +2009,26 @@ pub fn show(app: &mut FigApp, ui: &mut Ui) {
         Some(BarAction::Screens) => pres.view.side_panel = !pres.view.side_panel,
         _ => {}
     }
-    ux::help_window(&ctx, &mut pres);
+    ux::help_window(&ctx, pres);
     if pres.view.comments
         && let Some((frame, place, clip)) = pres.shown
     {
         crate::comments::presenter(app, &ctx, frame, place, clip);
-    } else if app.ui.comments.open.is_some() {
+    } else if app.ui.comments.open.is_some() && !pres.ux.window {
+        // (A presenter window leaves the open thread to the editor unless it shows comments.)
         app.ui.comments.close();
     }
-    finish(app, &mut pres);
+    finish(app, pres);
     // The options carry over to the next presentation (Responsive starts from the file's setting).
     app.ui.present_view = pres.view;
+    // Play in a window of its own, or back in the editor's, when asked (Options).
+    if let Some(on) = pres.ux.window_request.take() {
+        window::apply_to(app, &ctx, pres, on);
+    }
     // Escape ends the presentation unless something took it first: a comment thread, a menu, the
     // shortcut list ([`ux::escape`]).
     let escape = !menu_open && ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    if action == Some(BarAction::Close) || (escape && ux::escape(&mut pres)) {
-        return;
-    }
-    app.ui.present = Some(pres);
+    !(action == Some(BarAction::Close) || (escape && ux::escape(pres)))
 }
 
 /// How often the player polls the controllers while its prototype has gamepad triggers (seconds).
@@ -2154,6 +2171,18 @@ pub fn show_pane(app: &mut FigApp, ctx: &egui::Context) {
             let start = pane.player.current;
             app.ui.preview = Some(pane);
             app.run("proto.present", json!({"start": start}));
+        }
+        // Present in a window of its own (where there is one: else full window, with a message).
+        Some(BarAction::Window) => {
+            let start = pane.player.current;
+            app.run("proto.present", json!({"start": start}));
+            window::apply(app, ctx, true);
+            // The window takes the preview over (the pane goes). Where there is no window to give
+            // (one window, a screen reader) the presentation covers the editor and the pane waits
+            // under it, as with Present.
+            if !window::is_open(app) {
+                app.ui.preview = Some(pane);
+            }
         }
         _ => app.ui.preview = Some(pane),
     }
@@ -2435,6 +2464,7 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         &[
             (BarAction::Close, tr_noop("Close preview"), Icon::Close),
             (BarAction::Present, tr_noop("Present"), Icon::Play),
+            (BarAction::Window, tr_noop("Open in new window"), Icon::NewWindow),
             (BarAction::Restart, tr_noop("Restart"), Icon::Reset),
         ]
     } else {
@@ -2600,6 +2630,11 @@ fn options_menu(p: &mut Presenter, ui: &mut Ui, device: Option<Device>, now: f64
     ui.separator();
     if menu_check(ui, p.view.hide_ui, tr("Hide UI"), ux::spec(ux::Act::HideUi)) {
         ux::run(p, ux::Act::HideUi, ui.ctx(), now, false);
+        ui.close();
+    }
+    // The prototype in a window of its own, the editor's window free to go on working.
+    if menu_check(ui, p.ux.window, tr("Open in new window"), "") {
+        p.ux.window_request = Some(!p.ux.window);
         ui.close();
     }
     if menu_check(ui, false, tr("Keyboard shortcuts"), ux::spec(ux::Act::Help)) {
@@ -3183,6 +3218,10 @@ mod ux_tests;
 #[cfg(test)]
 #[path = "present_raster_tests.rs"]
 mod raster_tests;
+
+#[cfg(test)]
+#[path = "present_window_tests.rs"]
+mod window_tests;
 
 #[cfg(test)]
 mod tests {
