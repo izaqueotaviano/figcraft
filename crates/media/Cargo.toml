@@ -1,0 +1,23 @@
+[package]
+name = "figcraft-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Video and animation sources for prototypes, with no UI: Motion-JPEG in AVI and MP4/MOV, animated GIF, WebP and PNG, frames by time, and the player's deterministic clock"
+
+[lints]
+workspace = true
+
+[dependencies]
+image = { workspace = true }
+# Only for the test builders (`testing`): the APNG writer.
+png = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# The crate's own tests use its test builders.
+figcraft-media = { path = ".", features = ["testing"] }
+
+[features]
+# Synthetic sources and file writers for tests of the crates that play media (never in a shipped build).
+testing = ["dep:png"]

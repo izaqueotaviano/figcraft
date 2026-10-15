@@ -1576,6 +1576,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "figcraft-media"
+version = "0.6.0"
+dependencies = [
+ "figcraft-media",
+ "image",
+ "png",
+ "proptest",
+]
+
+[[package]]
 name = "figcraft-pathops"
 version = "0.6.0"
 dependencies = [
