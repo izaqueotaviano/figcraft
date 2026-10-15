@@ -72,6 +72,8 @@ mod canvas_drag_tests;
 #[cfg(test)]
 mod canvas_fixes_tests;
 #[cfg(test)]
+mod canvas_scroll_tests;
+#[cfg(test)]
 mod comments_tests;
 #[cfg(test)]
 mod cursors_tests;
