@@ -1016,7 +1016,7 @@ impl FigApp {
         widgets::set_nudge(&ctx, self.session.prefs.nudge_small, self.session.prefs.nudge_big);
         // The Inspect tab measures on hover without Alt.
         self.session.tool.redlines = self.ui.right_tab == RightTab::Inspect;
-        if self.ui.present.is_some() {
+        if present::window::covers_window(self) {
             present::show(self, ui);
             // What went wrong while presenting (a widget's plugin failing) shows over it.
             self.toast_ui(&ctx);

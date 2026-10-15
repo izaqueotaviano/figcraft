@@ -33,7 +33,7 @@ struct Noodle {
 }
 
 fn active(app: &FigApp) -> bool {
-    app.ui.right_tab == RightTab::Prototype && app.ui.present.is_none()
+    app.ui.right_tab == RightTab::Prototype && !crate::present::window::covers_window(app)
 }
 
 /// Screen rect of a node's axis-aligned page bounds.

@@ -118,7 +118,7 @@ struct Played {
 
 /// Whether Dev Mode extras show: the Inspect tab is open and nothing is presented.
 fn active(app: &FigApp) -> bool {
-    app.ui.right_tab == RightTab::Inspect && app.ui.present.is_none()
+    app.ui.right_tab == RightTab::Inspect && !crate::present::window::covers_window(app)
 }
 
 // ------------------------------------------------------------------ canvas

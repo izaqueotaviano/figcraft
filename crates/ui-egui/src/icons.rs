@@ -182,6 +182,8 @@ icons! {
     LivePrivate,
     /// The presenter's screens panel: a column of small screens beside the page.
     Screens,
+    /// Open in a window of its own: a window with a title strip and an arrow leaving it.
+    NewWindow,
 }
 
 /// Points along a circular arc from angle `a0` to `a1` (radians, y down: increasing is clockwise).
@@ -955,6 +957,12 @@ fn draw(p: &P, icon: Icon) {
             p.circle(4.5, 11.5, 2.0);
             p.line(6.0, 10.0, 13.0, 3.0);
             p.poly(&[(8.5, 2.5), (13.5, 2.5), (13.5, 7.5)], false);
+        }
+        NewWindow => {
+            p.rect(2.5, 5.5, 10.5, 13.5, 1.0);
+            p.line(3.0, 8.0, 10.0, 8.0);
+            p.line(8.5, 7.5, 13.0, 3.0);
+            p.poly(&[(9.0, 2.5), (13.5, 2.5), (13.5, 7.0)], false);
         }
         Screens => {
             // The window, a column of three small screens at its left and the page beside them.
