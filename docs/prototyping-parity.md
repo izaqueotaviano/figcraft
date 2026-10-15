@@ -119,7 +119,7 @@ product links a C library for it.
   (`jpeg`, or MPEG-4 Visual objects of the JPEG type); **animated GIF, WebP and PNG** (APNG), as videos
   when placed with `video: true` (or by the colour picker's Video type), else they stay the pictures
   that always animated by themselves. Seeking is exact (every Motion-JPEG picture stands alone).
-- **Refused, by name:** every other video codec: H.264 (AVC), HEVC, VP8, VP9, AV1, Apple ProRes,
+- **Refused, by name:** every other video codec: H.264 (AVC), HEVC, VP8, VP9, AV1, ProRes,
   MPEG-4 Visual and the other codecs of AVI and MOV files, DV, Cinepak and so on; WebM and Matroska
   files, by their codec. The message says `This video codec isn't supported yet: H.264 (avc1)`, and
   the file is not kept in the document. Fragmented MP4 (`moof`) is refused too. Most video that

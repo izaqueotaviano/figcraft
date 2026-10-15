@@ -47,7 +47,7 @@ fn other_codecs_are_refused_by_name() {
         (b"avc1", "H.264 (avc1)"),
         (b"HEVC", "HEVC (HEVC)"),
         (b"XVID", "MPEG-4 Visual (XVID)"),
-        (b"WMV3", "Windows Media Video (WMV3)"),
+        (b"WMV3", "WMV (WMV3)"),
         (b"VP90", "VP9 (VP90)"),
         (b"MJPA", "Motion-JPEG with interlaced fields (MJPA)"),
         (b"zzzz", "'zzzz'"),

@@ -64,11 +64,11 @@ fn other_codecs_are_refused_by_name() {
         (b"hev1", "HEVC (hev1)"),
         (b"av01", "AV1 (av01)"),
         (b"vp09", "VP9 (vp09)"),
-        (b"apch", "Apple ProRes (apch)"),
+        (b"apch", "ProRes (apch)"),
         (b"mjpa", "Motion-JPEG with interlaced fields (mjpa)"),
         (b"s263", "H.263 (s263)"),
         (b"png ", "PNG (png )"),
-        (b"SVQ3", "Sorenson Video (SVQ3)"),
+        (b"SVQ3", "SVQ (SVQ3)"),
         (b"zzzz", "'zzzz'"),
     ];
     for (code, name) in cases {
