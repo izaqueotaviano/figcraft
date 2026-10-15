@@ -18,7 +18,10 @@ pub struct CanvasState {
     pub rect: Rect,
     texture: Option<egui::TextureHandle>,
     tex_view: Option<figcraft_render::View>,
-    submitted: Option<JobKey>,
+    submitted: Option<(JobKey, figcraft_render::View)>,
+    /// When the view last zoomed (egui time): renders are drafts at half resolution until it
+    /// settles, so a wheel or pinch zoom keeps up.
+    last_zoom: Option<f64>,
     /// What the last canvas render had to do (shown by `ui.inspect`).
     pub render_work: Option<figcraft_render::Work>,
     dragging: bool,
@@ -46,6 +49,7 @@ impl Default for CanvasState {
             texture: None,
             tex_view: None,
             submitted: None,
+            last_zoom: None,
             render_work: None,
             dragging: false,
             space_pan: false,
@@ -102,9 +106,6 @@ impl FigApp {
 struct JobKey {
     doc: usize,
     page: NodeId,
-    origin: (i64, i64),
-    scale: i64,
-    size: (u32, u32),
     outline: bool,
     outline_extras: figcraft_render::Outline,
     outlined: Vec<NodeId>,
@@ -151,7 +152,6 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     let rect = ui.max_rect();
     app.canvas.rect = rect;
     let ctx = ui.ctx().clone();
-    let ppp = ctx.pixels_per_point();
     let resp = ui.interact(rect, ui.id().with("canvas"), Sense::click_and_drag());
     let key_box = app.ui.key_box;
     crate::a11y::canvas(&mut app.ui.nav, &resp, || key_box.map_or_else(|| describe(&app.session), describe_box));
@@ -169,7 +169,7 @@ pub fn show(app: &mut FigApp, ui: &mut Ui, worker: &mut Worker) {
     let own_cursor = input(app, ui, &resp);
     crate::live::track_pointer(app, &ctx);
     app.sync_preedit();
-    request_render(app, worker, ppp);
+    request_render(app, worker, &ctx);
     // Every finished render is shown, even when a newer one is already on its way: renders finish
     // in order, and an edit every frame (a drag) would otherwise never show until it stopped.
     if let Some(done) = worker.poll() {
@@ -268,11 +268,68 @@ fn describe_box([x0, y0, x1, y1]: [f64; 4]) -> String {
     )
 }
 
-fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32) {
+/// Device pixels rendered past each edge of the viewport, as a fraction of its size: a pan shows
+/// pixels that are already there instead of a bare strip of page background until the render
+/// catches up, and a pan within it renders and uploads nothing.
+pub(crate) const OVERSCAN: f64 = 0.25;
+/// How long after the last zoom step renders stay drafts (seconds).
+const ZOOM_SETTLE: f64 = 0.15;
+
+/// The largest render, in device pixels a side, that fits a texture `max_side` pixels a side: the
+/// renderer adds a pixel to snap the view to whole pixels, and a bigger texture fails on the GPU.
+pub(crate) fn render_cap(max_side: usize) -> u32 {
+    u32::try_from(max_side).unwrap_or(16_384).clamp(2, 16_384) - 1
+}
+
+/// The render to ask for so the screen `wanted` shows rendered pixels: `have` (the last one asked
+/// for) while it still covers `wanted` with margin to spare, else `wanted` grown by [`OVERSCAN`]
+/// on every side, at most `cap` device pixels a side ([`render_cap`]).
+pub(crate) fn plan_view(wanted: &figcraft_render::View, have: Option<&figcraft_render::View>, cap: u32) -> figcraft_render::View {
+    let s = wanted.scale;
+    let cap = f64::from(cap.clamp(1, 16_384));
+    let (ww, wh) = (f64::from(wanted.width).min(cap), f64::from(wanted.height).min(cap));
+    let width = (ww + 2.0 * (ww * OVERSCAN).round()).min(cap);
+    let height = (wh + 2.0 * (wh * OVERSCAN).round()).min(cap);
+    // The margin each side gets (none when the screen is as big as a texture can be).
+    let (gx, gy) = (((width - ww) / 2.0).floor().max(0.0), ((height - wh) / 2.0).floor().max(0.0));
+    // Where a pan is heading (-1, 0, 1 an axis): the next render keeps more margin that way.
+    let mut heading = (0.0, 0.0);
+    if let Some(h) = have
+        && s.is_finite()
+        && s > 0.0
+        && ((h.scale - s).abs() <= s * 1e-9)
+    {
+        // Spare margin (device pixels) the old render has around the wanted one on each side.
+        let left = (wanted.origin.0 - h.origin.0) * s;
+        let top = (wanted.origin.1 - h.origin.1) * s;
+        let right = f64::from(h.width) - left - ww;
+        let bottom = f64::from(h.height) - top - wh;
+        // Ask again once a pan has used up half the margin, before an edge shows.
+        let (sx, sy) = ((gx / 2.0).floor(), (gy / 2.0).floor());
+        if left >= sx && right >= sx && top >= sy && bottom >= sy {
+            return h.clone();
+        }
+        let side = |a: f64, b: f64| if a.is_finite() && b.is_finite() { (b - a).signum() * f64::from(u8::from(a != b)) } else { 0.0 };
+        heading = (-side(left, right), -side(top, bottom));
+    }
+    // Half the margin moves ahead of the pan: three quarters of the overscan ahead, a quarter behind.
+    let (ax, ay) = (gx / 2.0 * heading.0, gy / 2.0 * heading.1);
+    figcraft_render::View {
+        origin: (wanted.origin.0 - (gx - ax) / s, wanted.origin.1 - (gy - ay) / s),
+        scale: s,
+        width: width as u32,
+        height: height as u32,
+    }
+}
+
+fn request_render(app: &mut FigApp, worker: &mut Worker, ctx: &egui::Context) {
+    let ppp = ctx.pixels_per_point();
+    let now = ctx.input(|i| i.time);
     let Ok(ds) = app.session.ds() else { return };
     let rect = app.canvas.rect;
     let (mut ox, mut oy) = ds.view.origin();
-    let (scale, w, h) = if let Some(k) = ds.view.pixel_preview_scale() {
+    let pixel_preview = ds.view.pixel_preview_scale();
+    let (scale, w, h) = if let Some(k) = pixel_preview {
         // Pixel preview: render `k` pixels per page unit from a whole-pixel origin, shown magnified
         // without smoothing.
         (ox, oy) = ((ox * k).floor() / k, (oy * k).floor() / k);
@@ -281,6 +338,17 @@ fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32) {
     } else {
         (ds.view.zoom * f64::from(ppp), (rect.width() * ppp).ceil().max(1.0) as u32, (rect.height() * ppp).ceil().max(1.0) as u32)
     };
+    // While a zoom is under way, render at half resolution (a quarter of the pixels) and refine
+    // once it settles.
+    let zooming = pixel_preview.is_none() && app.canvas.last_zoom.is_some_and(|t| now - t < ZOOM_SETTLE);
+    let (scale, w, h) = if zooming {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(ZOOM_SETTLE));
+        (scale / 2.0, w.div_ceil(2).max(1), h.div_ceil(2).max(1))
+    } else {
+        (scale, w, h)
+    };
+    let cap = render_cap(ctx.input(|i| i.max_texture_side));
+    let wanted = figcraft_render::View { origin: (ox, oy), scale, width: w.min(cap), height: h.min(cap) };
     // The edited text is drawn live (an IME composition included); the caret is an overlay.
     let doc = app.preedit_view().map(|p| p.doc.clone()).unwrap_or_else(|| ds.doc.clone());
     let outlined = if ds.view.outlines_selection { ds.selection.clone() } else { vec![] };
@@ -289,9 +357,6 @@ fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32) {
     let key = JobKey {
         doc: Arc::as_ptr(&doc) as usize,
         page: ds.page,
-        origin: ((ox * 1000.0) as i64, (oy * 1000.0) as i64),
-        scale: (scale * 10000.0) as i64,
-        size: (w, h),
         outline: ds.view.outlines,
         outline_extras,
         outlined: outlined.clone(),
@@ -300,22 +365,24 @@ fn request_render(app: &mut FigApp, worker: &mut Worker, ppp: f32) {
         fonts: figcraft_text::layout_generation(),
         proof,
     };
-    if app.canvas.submitted.as_ref() == Some(&key) {
+    let last = app.canvas.submitted.as_ref();
+    let view = if pixel_preview.is_some() || zooming {
+        // Pixel preview renders the view exactly (it is cheap: few pixels per page unit); so does
+        // a zoom draft (the next frame zooms on: a margin would be thrown away).
+        wanted
+    } else {
+        plan_view(&wanted, last.map(|(_, v)| v), cap)
+    };
+    if let Some((k, v)) = last
+        && *k == key
+        && *v == view
+    {
         return;
     }
-    let job = Job {
-        doc,
-        page: ds.page,
-        view: figcraft_render::View { origin: (ox, oy), scale, width: w.min(16384), height: h.min(16384) },
-        outline: ds.view.outlines,
-        outline_extras,
-        outlined,
-        skip: vec![],
-        solo: key.solo,
-        proof,
-    };
+    let job =
+        Job { doc, page: ds.page, view: view.clone(), outline: ds.view.outlines, outline_extras, outlined, skip: vec![], solo: key.solo, proof };
     worker.submit(job);
-    app.canvas.submitted = Some(key);
+    app.canvas.submitted = Some((key, view));
 }
 
 /// The zoom tool while Z is held (Alt: zoom out): a click zooms a step about the pointer, a drag
@@ -388,14 +455,15 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
             let anchor = app.to_page(pos);
             if let Ok(ds) = app.session.ds_mut() {
                 let z = ds.view.zoom * f64::from(zoom_delta);
+                // A view change isn't a document change: no `revision` bump, which would rebuild
+                // the panels' per-document caches (asset listing, CJK scan…) every scroll frame.
                 ds.view.set_zoom_at(z, (anchor.x, anchor.y));
-                ds.revision += 1;
             }
+            app.canvas.last_zoom = Some(ctx.input(|i| i.time));
         } else if scroll != egui::Vec2::ZERO
             && let Ok(ds) = app.session.ds_mut()
         {
             ds.view.scroll(f64::from(scroll.x), f64::from(scroll.y), mods.shift);
-            ds.revision += 1;
         }
     }
     if zoom_tool(app, ui, resp, pos, mods, editing_text || typing_elsewhere) {
@@ -411,7 +479,6 @@ fn input(app: &mut FigApp, ui: &mut Ui, resp: &egui::Response) -> bool {
                     let z = ds.view.zoom.max(1e-6);
                     ds.view.cx = cx - f64::from(pos.x - p0.x) / z;
                     ds.view.cy = cy - f64::from(pos.y - p0.y) / z;
-                    ds.revision += 1;
                 }
             }
         }

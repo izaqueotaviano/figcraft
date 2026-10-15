@@ -31,7 +31,7 @@ use figcraft_doc::{Document, ExportFormat, NodeId, NodeKind};
 use figcraft_geom::{Affine, Rect};
 
 /// Which part of a page to draw, and how big.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct View {
     /// Page coordinate shown at the pixmap's top-left.
     pub origin: (f64, f64),

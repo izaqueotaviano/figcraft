@@ -910,9 +910,12 @@ pub fn show(app: &mut FigApp, ctx: &egui::Context) {
     // So do clicks in the variable picker binding one of its fields (Escape closes that first).
     let variables = crate::variable_ui::picker_rect(ctx);
     let in_popup = egui::Popup::is_any_open(ctx) || variables.is_some();
+    // Not the press of the click (or tap) that opened it.
+    let fresh = crate::menus::just_opened(ctx, Id::new("style_picker_area"));
     let outside = ctx.input(|i| {
         i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| !rect.contains(pos) && !picker_rect.is_some_and(|r| r.contains(pos)))
-    }) && !in_popup;
+    }) && !in_popup
+        && !fresh;
     let mut close = outside || (ctx.input(|i| i.key_pressed(egui::Key::Escape)) && !in_popup);
     let ids = p.ids.clone();
     let slot = p.slot;

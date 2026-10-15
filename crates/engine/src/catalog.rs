@@ -192,7 +192,7 @@ pub static MENU: &[MenuItem] = &[
     m!("Text", "Italic", "text.italic"),
     m!("Text", "Underline", "text.underline"),
     m!("Text", "Strikethrough", "text.strikethrough"),
-    m!("Text", "Create link", "text.link"),
+    m!("Text", "Create link…", "text.link"),
     m!("Text", SEP, ""),
     m!("Text", "Bulleted list", "text.bulletList"),
     m!("Text", "Numbered list", "text.numberList"),
@@ -235,7 +235,7 @@ pub static MENU: &[MenuItem] = &[
     m!("Vector", "Delete and heal selection", "vector.deleteHeal"),
     m!("Vector", "Simplify vector", "vector.simplify"),
     m!("Vector", "Reverse path direction", "vector.reverse"),
-    m!("Vector", "Offset path", "vector.offset"),
+    m!("Vector", "Offset path…", "vector.offset"),
     // Plugins
     m!("Plugins", "Run last plugin", "plugins.runLast"),
     m!("Plugins", "Manage plugins…", "plugins.manage"),

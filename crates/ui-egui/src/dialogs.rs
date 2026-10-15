@@ -287,6 +287,7 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
         export_dialog(app, ctx);
     }
     color_profile_dialog(app, ctx);
+    prompt_dialog(app, ctx);
     crate::plugins_ui::show(app, ctx);
     crate::live::join_dialog(app, ctx);
     crate::live::publish_dialog(app, ctx);
@@ -402,6 +403,120 @@ fn batch_rename_dialog(app: &mut FigApp, ctx: &Context) {
         app.run("object.batchRename", batch_rename_params(&b));
     }
     app.ui.batch_rename = (open && !cancel && !apply).then_some(b);
+}
+
+/// What a [`Prompt`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptKind {
+    /// Text ▸ Create link: the address (`text.link {url}`).
+    Link,
+    /// Vector ▸ Offset path: the distance (`vector.offset {offset}`).
+    Offset,
+}
+
+impl PromptKind {
+    /// The command's label (the menu item's), in the UI language.
+    fn title(self) -> String {
+        let id = self.command();
+        i18n::command(id, figcraft_engine::find_command(id).map_or(id, |c| c.label)).to_string()
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Link => tr_noop("Link to (a web address)"),
+            Self::Offset => tr_noop("Distance (negative: inwards)"),
+        }
+    }
+    fn command(self) -> &'static str {
+        match self {
+            Self::Link => "text.link",
+            Self::Offset => "vector.offset",
+        }
+    }
+    /// The command's parameters for what was typed, or why it can't be used.
+    fn params(self, value: &str, ids: &[NodeId]) -> Result<serde_json::Value, &'static str> {
+        let value = value.trim();
+        let mut p = match self {
+            // The field starts with the scheme: an address needs more than that.
+            Self::Link if value.is_empty() || value.ends_with("://") => return Err(tr_noop("Type a web address")),
+            Self::Link => json!({"url": value}),
+            Self::Offset => match crate::field_math::eval(value, None) {
+                Some(v) if v.is_finite() && v != 0.0 => json!({"offset": v}),
+                _ => return Err(tr_noop("Type a distance other than 0")),
+            },
+        };
+        // None: what the command takes by default (the text being edited, the selection).
+        if !ids.is_empty() {
+            p["ids"] = json!(ids);
+        }
+        Ok(p)
+    }
+}
+
+/// A menu item's one-value question (Create link, Offset path): a field, then the command.
+#[derive(Clone, Debug)]
+pub struct Prompt {
+    pub kind: PromptKind,
+    /// The layers it applies to (the selection when it opened).
+    pub ids: Vec<NodeId>,
+    pub value: String,
+    /// The field has had the keyboard (it takes it once, when the prompt opens).
+    focused: bool,
+}
+
+impl Prompt {
+    pub fn new(kind: PromptKind, ids: Vec<NodeId>) -> Self {
+        let value = match kind {
+            PromptKind::Link => "https://".to_string(),
+            PromptKind::Offset => "8".to_string(),
+        };
+        Self { kind, ids, value, focused: false }
+    }
+}
+
+fn prompt_dialog(app: &mut FigApp, ctx: &Context) {
+    let Some(mut p) = app.ui.prompt.clone() else { return };
+    let t = Tokens::get(ctx);
+    let mut open = true;
+    let mut submit = false;
+    let mut cancel = false;
+    let check = p.kind.params(&p.value, &p.ids);
+    let title = p.kind.title();
+    window(&title, ctx).open(&mut open).show(ctx, |ui| {
+        ui.set_width(320.0);
+        ui.label(RichText::new(tr(p.kind.label())).color(t.text_secondary).font(regular(11.0)));
+        ui.add_space(6.0);
+        let field = ui.add(egui::TextEdit::singleline(&mut p.value).desired_width(f32::INFINITY).font(regular(13.0)));
+        if !p.focused {
+            field.request_focus();
+            p.focused = true;
+        }
+        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            submit = true;
+        }
+        if let Err(why) = &check {
+            ui.add_space(4.0);
+            ui.label(RichText::new(tr(why)).color(t.text_secondary).font(regular(11.0)));
+        }
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            if crate::widgets::button(ui, &title, true, check.is_ok()).clicked() {
+                submit = true;
+            }
+            if crate::widgets::button(ui, tr("Cancel"), false, true).clicked() {
+                cancel = true;
+            }
+        });
+    });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel = true;
+    }
+    app.ui.prompt = (open && !cancel).then_some(p.clone());
+    if submit
+        && let Ok(params) = p.kind.params(&p.value, &p.ids)
+        && app.run(p.kind.command(), params).is_some()
+    {
+        app.ui.prompt = None;
+    }
 }
 
 /// File ▸ Color profile: pick sRGB or Display P3, then keep the colours' appearance (convert the

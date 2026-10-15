@@ -147,6 +147,10 @@ pub fn left_panel(app: &mut FigApp, ui: &mut Ui) {
     } else {
         let name = app.session.doc().map(|d| d.name.clone()).unwrap_or_default();
         let nr = Rect::from_min_max(pos2(head.min.x + 14.0, head.min.y + 14.0), pos2(head.max.x - 48.0, head.min.y + 34.0));
+        // File ▸ Rename: the field takes the keyboard (and starts editing).
+        if std::mem::take(&mut app.ui.rename_file) {
+            ui.memory_mut(|m| m.request_focus(Id::new("filename").with("te")));
+        }
         if let Some(new) = crate::widgets::text_field_inline(ui, Id::new("filename"), &name, nr, semibold(13.0)) {
             app.run("file.rename", json!({"name": new}));
         }

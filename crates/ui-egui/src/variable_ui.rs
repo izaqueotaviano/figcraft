@@ -441,7 +441,9 @@ pub fn picker(app: &mut FigApp, ctx: &egui::Context) {
         Stroke::new(1.0, Color32::from_black_alpha(40)),
         egui::StrokeKind::Inside,
     );
-    let clicked_outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| !rect.contains(pos)));
+    // Not the press of the click (or tap) that opened it.
+    let fresh = crate::menus::just_opened(ctx, Id::new("variable_picker_area"));
+    let clicked_outside = ctx.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|pos| !rect.contains(pos))) && !fresh;
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) || clicked_outside {
         close = true;
     }
