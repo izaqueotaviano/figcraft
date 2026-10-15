@@ -137,7 +137,8 @@ pub fn screenshot_viewport(app: &FigApp) -> Result<Option<ViewportId>, String> {
 pub fn queue_input(app: &mut FigApp, events: Vec<Event>) -> Result<(), String> {
     /// Events kept for a window that doesn't draw (hidden, or not open yet).
     const KEEP: usize = 4096;
-    let p = app.ui.present.as_mut().filter(|p| p.ux.window).ok_or("the prototype isn't playing in a window of its own (ui.set {presentWindow: true})")?;
+    let p =
+        app.ui.present.as_mut().filter(|p| p.ux.window).ok_or("the prototype isn't playing in a window of its own (ui.set {presentWindow: true})")?;
     let room = KEEP.saturating_sub(p.ux.input.len());
     p.ux.input.extend(events.into_iter().take(room));
     Ok(())

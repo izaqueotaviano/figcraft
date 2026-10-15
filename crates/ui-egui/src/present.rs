@@ -48,10 +48,10 @@ use crate::widgets;
 // of their own; they work on the player's private state.
 #[path = "present_panel.rs"]
 pub(crate) mod panel;
-#[path = "present_window.rs"]
-pub(crate) mod window;
 #[path = "present_chrome.rs"]
 pub(crate) mod ux;
+#[path = "present_window.rs"]
+pub(crate) mod window;
 
 /// A mouse trigger waiting out its delay: interaction `k` of `node`, hit at `rect` while `root`
 /// (the screen or the top overlay) showed; due at `due` on the player's clock.

@@ -308,7 +308,8 @@ fn the_control_channel_opens_drives_and_captures_the_window() {
     // A capture asked for before the window has drawn waits for it ...
     let shot = |u: &mut Ui, params: Value| {
         let (tx, rx) = std::sync::mpsc::channel();
-        let request = crate::control::ControlRequest { id: json!(1), method: "ui.screenshot".into(), params, reply: tx, cancelled: Default::default() };
+        let request =
+            crate::control::ControlRequest { id: json!(1), method: "ui.screenshot".into(), params, reply: tx, cancelled: Default::default() };
         u.app.control_queue.push(request);
         rx
     };
