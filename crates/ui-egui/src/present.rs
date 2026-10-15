@@ -720,6 +720,8 @@ impl Presenter {
             "flinging": !self.fling.is_empty(),
             "gamepad": self.uses_pads,
             "shortcuts": self.ux.help,
+            "position": ux::position(self).map(|(i, n)| [i, n]),
+            "controls": self.ux.controls.iter().map(|(n, r)| ((*n).to_string(), json!([r.min.x, r.min.y, r.max.x, r.max.y]))).collect::<serde_json::Map<String, Value>>(),
         })
     }
 
@@ -1897,6 +1899,21 @@ enum BarAction {
     Help,
 }
 
+impl BarAction {
+    /// The control's name for `ui.inspect` (`controls`).
+    fn id(self) -> &'static str {
+        match self {
+            BarAction::Close => "close",
+            BarAction::Restart => "restart",
+            BarAction::Present => "present",
+            BarAction::Options => "options",
+            BarAction::Comments => "comments",
+            BarAction::Inspect => "inspect",
+            BarAction::Help => "help",
+        }
+    }
+}
+
 /// The full-window presenter (while `app.ui.present` is set). Escape or Close ends it.
 pub fn show(app: &mut FigApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
@@ -2359,12 +2376,14 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
             (BarAction::Help, tr_noop("Keyboard shortcuts"), Icon::Help),
         ]
     };
+    p.ux.controls.clear();
     let mut x = bar.max.x - if chrome.pane { 6.0 } else { 8.0 };
     for (act, label, icon) in buttons {
         // (The shortcut list's button reads "?", as the key.)
         let shown = if *act == BarAction::Help { ux::spec(ux::Act::Help) } else { tr(label) };
         let w = if chrome.pane { 24.0 } else { ui.painter().layout_no_wrap(shown.to_string(), regular(11.5), text).size().x + 16.0 };
         let br = Rect::from_min_size(pos2(x - w, bar.center().y - 12.0), vec2(w, 24.0));
+        p.ux.note(act.id(), br);
         x = br.min.x - if chrome.pane { 2.0 } else { 4.0 };
         let mut resp = ui.interact(br, ui.id().with(("pbar", *label)), Sense::click());
         if chrome.pane {
@@ -2433,7 +2452,9 @@ fn top_bar(p: &mut Presenter, ui: &mut Ui, bar: Rect, now: f64, chrome: Chrome) 
         left.text(pos2(lx, bar.center().y), Align2::LEFT_CENTER, "/", regular(11.5), dim);
         lx += 14.0;
     }
-    left.text(pos2(lx, bar.center().y), Align2::LEFT_CENTER, name, regular(11.5), if chrome.pane { text } else { Color32::from_gray(220) });
+    // The screen's name and where it is among the page's screens ("3 / 12", with previous and next).
+    let name_color = if chrome.pane { text } else { Color32::from_gray(220) };
+    ux::name_and_counter(p, ui, &left, bar, lx, x, &name, name_color, ux::BarColors { text, dim, hover }, now);
     action
 }
 
@@ -3059,6 +3080,10 @@ mod page_tests;
 #[cfg(test)]
 #[path = "present_chrome_tests.rs"]
 mod ux_tests;
+
+#[cfg(test)]
+#[path = "present_raster_tests.rs"]
+mod raster_tests;
 
 #[cfg(test)]
 mod tests {

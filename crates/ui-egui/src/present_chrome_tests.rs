@@ -2,7 +2,7 @@
 //! "?" list all read, and stepping through the page's screens. Driven headless through egui (the
 //! harness is `present_tests`'); the window is 1440×900 and the presenter's bar takes 40.
 
-use egui::{Event, Key, Modifiers, Pos2, Rect, Shape, pos2};
+use egui::{Event, Key, Modifiers, Pos2, Rect, Shape, pos2, vec2};
 use figcraft_doc::NodeId;
 use figcraft_engine::Session;
 use serde_json::{Value, json};
@@ -69,6 +69,14 @@ pub(crate) fn texts(out: &egui::FullOutput) -> Vec<(String, Pos2)> {
         .collect()
 }
 
+/// The middle of the control `name` the presenter (or the pane: `pane`) drew last.
+pub(crate) fn control(u: &Ui, pane: bool, name: &str) -> Pos2 {
+    let p = if pane { u.preview() } else { presenter(u) };
+    let r = &p["controls"][name];
+    let f = |i: usize| r[i].as_f64().unwrap_or_else(|| panic!("no control {name:?}: {}", p["controls"])) as f32;
+    pos2((f(0) + f(2)) / 2.0, (f(1) + f(3)) / 2.0)
+}
+
 /// `s` translated (the tests read the screen in whatever language the UI is set to).
 pub(crate) fn t(s: &str) -> String {
     crate::i18n::tr(s).to_string()
@@ -101,6 +109,12 @@ pub(crate) fn click(u: &mut Ui, at: Pos2) {
     frame_out(u, vec![b(true)]);
     frame_out(u, vec![b(false)]);
     frame_out(u, vec![]);
+}
+
+/// Click the full-window presenter's control `name` ([`control`]).
+pub(crate) fn click_control(u: &mut Ui, name: &str) {
+    let at = control(u, false, name);
+    click(u, at);
 }
 
 /// The modifiers a chord is pressed with.
@@ -328,4 +342,172 @@ fn the_pane_takes_only_the_keys_that_fit_it() {
     step(&mut u, Key::Z);
     let p = u.preview();
     assert_eq!((&p["shortcuts"], &p["comments"], &p["scale"]), (&json!(false), &json!(false), &json!("actual")), "?, C and Z are the full window's");
+}
+
+/// Screens A, B, C and a frame "Menu" side by side, A presented. On A: "Next" (a layer at the
+/// top) goes to C on a click, "Open" (below it) opens the menu as an overlay.
+fn linked() -> (Ui, [NodeId; 3], NodeId) {
+    let mut s = Session::new();
+    let [a, b, c] = [("A", 0.0), ("B", 400.0), ("C", 800.0)].map(|(n, x)| frame(&mut s, n, x));
+    let menu = frame(&mut s, "Menu", 1200.0);
+    let layer = |s: &mut Session, name: &str, y: f64| {
+        id(&ex(s, "shape.rectangle", json!({"parent": a, "x": 10, "y": y, "width": 100, "height": 40, "props": {"name": name}})))
+    };
+    let (next, open) = (layer(&mut s, "Next", 10.0), layer(&mut s, "Open", 100.0));
+    let on_click =
+        |layer: NodeId, action: Value| json!({"id": layer, "trigger": {"type": "onClick"}, "action": action, "transition": {"type": "instant"}});
+    ex(&mut s, "proto.interaction.add", on_click(next, json!({"type": "navigate", "dest": c})));
+    ex(&mut s, "proto.interaction.add", on_click(open, json!({"type": "openOverlay", "dest": menu})));
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": a}));
+    (u, [a, b, c], menu)
+}
+
+/// The middle of each hotspot, top to bottom.
+fn hotspots(u: &Ui) -> Vec<Pos2> {
+    let mut v: Vec<Pos2> = presenter(u)["hotspots"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|h| {
+            let f = |i: usize| h["rect"][i].as_f64().unwrap_or(0.0) as f32;
+            pos2((f(0) + f(2)) / 2.0, (f(1) + f(3)) / 2.0)
+        })
+        .collect();
+    v.sort_by(|p, q| p.y.total_cmp(&q.y));
+    v
+}
+
+fn click_hotspot(u: &mut Ui, k: usize) {
+    let at = hotspots(u)[k];
+    click(u, at);
+}
+
+fn position(u: &Ui) -> Value {
+    presenter(u)["position"].clone()
+}
+
+fn current(u: &Ui) -> Value {
+    presenter(u)["current"].clone()
+}
+
+#[test]
+fn the_bar_says_which_screen_of_the_page_this_is_and_steps_with_buttons() {
+    let (mut u, [a, b, c], _) = linked();
+    // The page has A, B, C and the menu frame: four top-level frames in reading order.
+    assert_eq!(position(&u), json!([1, 4]));
+    assert!(has_text(&frame_out(&mut u, vec![]), "1 / 4"));
+    // Keys: N, Space and the right arrow step on; the left arrow back.
+    press(&mut u, Key::N, Modifiers::NONE);
+    assert_eq!((position(&u), current(&u)), (json!([2, 4]), json!(b)));
+    press(&mut u, Key::Space, Modifiers::NONE);
+    assert_eq!(position(&u), json!([3, 4]));
+    press(&mut u, Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(position(&u), json!([2, 4]));
+    // The buttons beside the counter do the same and the text follows.
+    click_control(&mut u, "next");
+    assert_eq!((position(&u), current(&u)), (json!([3, 4]), json!(c)));
+    assert!(has_text(&frame_out(&mut u, vec![]), "3 / 4"));
+    click_control(&mut u, "prev");
+    click_control(&mut u, "prev");
+    assert_eq!((position(&u), current(&u)), (json!([1, 4]), json!(a)));
+    // At the first screen "previous" does nothing; at the last, "next".
+    click_control(&mut u, "prev");
+    assert_eq!(position(&u), json!([1, 4]));
+    for _ in 0..5 {
+        click_control(&mut u, "next");
+    }
+    assert_eq!(position(&u), json!([4, 4]));
+    // Restarting and a click on a link update it too.
+    click_control(&mut u, "restart");
+    assert_eq!(position(&u), json!([1, 4]));
+    click_hotspot(&mut u, 0);
+    assert_eq!(current(&u), json!(c), "the link led to C");
+    assert_eq!(position(&u), json!([3, 4]), "a click that navigates updates the counter");
+}
+
+#[test]
+fn an_overlay_keeps_the_counter_and_the_stepping_waits_for_it_to_close() {
+    let (mut u, [a, ..], menu) = linked();
+    click_hotspot(&mut u, 1);
+    assert_eq!(presenter(&u)["overlays"], json!([menu]));
+    // The screen under the overlay is still screen 1.
+    assert_eq!(position(&u), json!([1, 4]));
+    assert!(has_text(&frame_out(&mut u, vec![]), "1 / 4"));
+    // Neither the buttons nor the keys step while it is open.
+    click_control(&mut u, "next");
+    press(&mut u, Key::N, Modifiers::NONE);
+    press(&mut u, Key::ArrowRight, Modifiers::NONE);
+    assert_eq!((position(&u), current(&u)), (json!([1, 4]), json!(a)));
+    // Closed (a click outside it), they step again.
+    click(&mut u, pos2(20.0, 450.0));
+    assert_eq!(presenter(&u)["overlays"], json!([]));
+    press(&mut u, Key::N, Modifiers::NONE);
+    assert_eq!(position(&u), json!([2, 4]));
+}
+
+#[test]
+fn a_page_with_one_screen_has_no_counter_and_flows_are_not_what_it_counts() {
+    // One frame: nothing to step through, no counter and no buttons.
+    let mut s = Session::new();
+    let only = frame(&mut s, "Only", 0.0);
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": only}));
+    assert_eq!(position(&u), Value::Null);
+    let out = frame_out(&mut u, vec![]);
+    assert!(!texts(&out).iter().any(|(t, _)| t.contains(" / ")), "{:?}", texts(&out));
+    assert!(presenter(&u)["controls"]["next"].is_null() && presenter(&u)["controls"]["prev"].is_null());
+    // Two flows on a page of five screens: the counter is the page's, whichever flow plays.
+    let mut s = Session::new();
+    let ids: Vec<NodeId> = (0..5).map(|i| frame(&mut s, &format!("S{i}"), 400.0 * f64::from(i))).collect();
+    ex(&mut s, "proto.flow.add", json!({"start": ids[0], "name": "One"}));
+    ex(&mut s, "proto.flow.add", json!({"start": ids[3], "name": "Two"}));
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": ids[3]}));
+    assert_eq!(position(&u), json!([4, 5]), "the second flow starts at the page's fourth screen");
+    press(&mut u, Key::N, Modifiers::NONE);
+    press(&mut u, Key::N, Modifiers::NONE);
+    assert_eq!(position(&u), json!([5, 5]), "and the keys go on past the flow's own screens");
+    // Frames inside a section count too, in reading order with the page's other frames.
+    let mut s = Session::new();
+    let a = frame(&mut s, "A", 0.0);
+    let sec = id(&ex(&mut s, "node.create", json!({"type": "section", "x": 380, "y": -20, "width": 700, "height": 500})));
+    let b = frame(&mut s, "B", 400.0);
+    ex(&mut s, "node.reparent", json!({"ids": [b], "parent": sec}));
+    let c = frame(&mut s, "C", 800.0);
+    ex(&mut s, "node.reparent", json!({"ids": [c], "parent": sec}));
+    let mut u = Ui::new(s);
+    u.run("proto.present", json!({"start": a}));
+    press(&mut u, Key::N, Modifiers::NONE);
+    assert_eq!((position(&u), current(&u)), (json!([2, 3]), json!(b)));
+}
+
+#[test]
+fn a_long_name_gives_way_to_the_counter_and_the_pane_has_one_too() {
+    let mut s = Session::new();
+    let long = "A screen with a really rather long name that goes on and on and on and on";
+    let a = id(&ex(&mut s, "frame.create", json!({"x": 0, "y": 0, "width": 300, "height": 400, "name": long})));
+    frame(&mut s, "B", 400.0);
+    let mut u = Ui::new(s);
+    u.size = vec2(700.0, 500.0);
+    u.run("proto.present", json!({"start": a}));
+    let out = frame_out(&mut u, vec![]);
+    // The counter is still on the bar, left of the buttons at the right, and its text isn't cut.
+    assert!(has_text(&out, "1 / 2"));
+    let (p, help) = (control(&u, false, "position"), control(&u, false, "help"));
+    assert!(p.x < help.x - 20.0, "{p:?} {help:?}");
+    // The preview pane shows it too: with its buttons when they fit (here the name is cut to make
+    // room), as text alone when they don't (a flow picker takes the room), not at all when even
+    // that is too much.
+    u.app.ui.present = None;
+    u.run("proto.preview", json!({"start": a}));
+    u.frames(2, Vec::new);
+    assert_eq!(u.preview()["position"], json!([1, 2]));
+    let pane = u.preview();
+    assert!(!pane["controls"]["position"].is_null() && !pane["controls"]["next"].is_null(), "{}", pane["controls"]);
+    u.run("proto.flow.add", json!({"start": a, "name": "Flow one"}));
+    u.frames(3, Vec::new);
+    let pane = u.preview();
+    assert!(!pane["controls"]["position"].is_null() && pane["controls"]["next"].is_null(), "{}", pane["controls"]);
 }

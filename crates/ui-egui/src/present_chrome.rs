@@ -4,12 +4,14 @@
 //!
 //! A child module of `present`: it works on the player's private state.
 
-use egui::{Align2, Context, CornerRadius, Id, Key, Modifiers, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, Context, CornerRadius, Id, Key, Modifiers, Painter, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use figcraft_doc::proto::{Easing, Transition};
 use figcraft_doc::{Document, NodeId};
 
 use super::{Presenter, page_settings};
-use crate::i18n::{tr, tr_noop};
+use crate::a11y::Tip;
+use crate::i18n::{tr, tr_noop, trf};
+use crate::icons::{self, Icon};
 use crate::theme::{Tokens, regular, semibold};
 
 /// What a presenter shortcut does. Every key the presenter itself reacts to is one of these (the
@@ -258,6 +260,99 @@ pub fn step(p: &mut Presenter, forward: bool, now: f64) -> bool {
     true
 }
 
+/// Where the presented screen is in the [`sequence`]: its place counted from 1 and how many
+/// screens there are. This is the "3 / 12" of the bar. It counts the page's top-level frames in
+/// reading order, as the keys step through them, not the screens a flow reaches (a flow is only a
+/// starting point, and several flows share screens). An overlay open over the screen doesn't change
+/// it (the keys do nothing while one is open, and the bar's arrows follow). `None` when the page has
+/// just this one screen, or the presented frame isn't among them: the bar then shows no counter.
+pub fn position(p: &Presenter) -> Option<(usize, usize)> {
+    let doc = p.doc.as_ref()?;
+    let frames = sequence(doc, p.current);
+    let i = frames.iter().position(|f| *f == p.current)?;
+    (frames.len() > 1).then_some((i + 1, frames.len()))
+}
+
+/// The colours the bar's left side draws with (the full-window bar is dark, the pane's follows the
+/// theme).
+#[derive(Clone, Copy)]
+pub struct BarColors {
+    pub text: Color32,
+    pub dim: Color32,
+    pub hover: Color32,
+}
+
+/// The left end of the bar after the flow picker: the screen's name, then "3 / 12" between
+/// previous and next buttons. `left` paints (clipped to what the buttons at the right leave), `from`
+/// is where the name starts and `limit` where the buttons at the right begin. The counter keeps its
+/// room and the name is cut to what is left (at least [`MIN_NAME`] of it); where even that is too
+/// tight the buttons go and the text stays, and where the text doesn't fit either, it goes.
+#[allow(clippy::too_many_arguments)]
+pub fn name_and_counter(
+    p: &mut Presenter,
+    ui: &Ui,
+    left: &Painter,
+    bar: Rect,
+    from: f32,
+    limit: f32,
+    name: &str,
+    name_color: Color32,
+    c: BarColors,
+    now: f64,
+) {
+    const BTN: f32 = 22.0;
+    /// The least of the name the counter leaves (points).
+    const MIN_NAME: f32 = 48.0;
+    let cy = bar.center().y;
+    let counter = position(p).map(|(i, n)| (format!("{i} / {n}"), i, n));
+    let galley = |t: &str| left.layout_no_wrap(t.to_string(), regular(11.5), c.dim);
+    let text_w = counter.as_ref().map_or(0.0, |(t, ..)| galley(t).size().x);
+    let room = limit - from - 8.0 - MIN_NAME;
+    let buttons = room >= BTN + 4.0 + text_w + 4.0 + BTN;
+    let shown = counter.filter(|_| buttons || room >= text_w);
+    let cluster_w = shown.as_ref().map_or(0.0, |_| if buttons { BTN + 4.0 + text_w + 4.0 + BTN } else { text_w });
+    // The counter sits after the name, or at the right end when the name is long.
+    let x0 = if shown.is_some() { (from + galley(name).size().x + 10.0).min(limit - cluster_w - 8.0) } else { limit };
+    let name_clip = Rect::from_min_max(bar.min, pos2((x0 - 6.0).max(from), bar.max.y));
+    left.with_clip_rect(name_clip.intersect(left.clip_rect())).text(pos2(from, cy), Align2::LEFT_CENTER, name, regular(11.5), name_color);
+    let Some((text, i, n)) = shown else { return };
+    let stepping = p.overlays.is_empty();
+    let button = |p: &mut Presenter, at: f32, forward: bool, enabled: bool| {
+        let r = Rect::from_min_size(pos2(at, cy - BTN / 2.0), vec2(BTN, BTN));
+        p.ux.note(if forward { "next" } else { "prev" }, r);
+        let sense = if enabled { Sense::click() } else { Sense::hover() };
+        let id = ui.id().with(("pbar_step", forward));
+        let resp = ui.interact(r.intersect(left.clip_rect()), id, sense);
+        let label = if forward { tr("Next screen") } else { tr("Previous screen") };
+        let key = ux_spec(if forward { Act::Next } else { Act::Prev });
+        let resp = resp.tip(format!("{label} ({key})"));
+        if enabled && resp.hovered() {
+            left.rect_filled(r, CornerRadius::same(5), c.hover);
+        }
+        let icon = if forward { Icon::ChevronRight } else { Icon::ChevronLeft };
+        icons::paint(left, r.shrink(5.0), icon, if enabled { c.text } else { c.dim.gamma_multiply(0.5) });
+        if enabled && resp.clicked() {
+            step(p, forward, now);
+        }
+    };
+    let tx = if buttons { x0 + BTN + 4.0 } else { x0 };
+    if buttons {
+        button(p, x0, false, stepping && i > 1);
+    }
+    let label = left.text(pos2(tx, cy), Align2::LEFT_CENTER, &text, regular(11.5), c.dim);
+    p.ux.note("position", label);
+    let tip = ui.interact(label.expand2(vec2(2.0, 8.0)).intersect(left.clip_rect()), ui.id().with("pbar_position"), Sense::hover());
+    let _ = tip.on_hover_text(trf("Screen {x} of {y}", &[("x", &i), ("y", &n)]));
+    if buttons {
+        button(p, tx + text_w + 4.0, true, stepping && i < n);
+    }
+}
+
+/// [`spec`] as the platform writes it.
+fn ux_spec(act: Act) -> String {
+    crate::toolbar::pretty_shortcut(spec(act))
+}
+
 // ---------------------------------------------------------------------------------------------
 // The shortcut list.
 
@@ -266,6 +361,16 @@ pub fn step(p: &mut Presenter, forward: bool, now: f64) -> bool {
 pub struct Ux {
     /// The shortcut list is open.
     pub help: bool,
+    /// Where the controls of the bar (and the panels) were drawn last, by name (window points):
+    /// `ui.inspect` reports them so that a script can click them.
+    pub controls: Vec<(&'static str, Rect)>,
+}
+
+impl Ux {
+    /// Note where the control `name` is drawn.
+    pub fn note(&mut self, name: &'static str, r: Rect) {
+        self.controls.push((name, r));
+    }
 }
 
 /// One key of the list, as a keycap; returns its width.
