@@ -261,6 +261,13 @@ capture). `viewport: "present"` captures the window the prototype plays in when 
 (`ui.set {presentWindow: true}`; an error when it doesn't; it waits for that window's first frame).
 Returns `{path, width, height}`, or an error after 60 s when the window doesn't deliver.
 
+Without a display (a Linux build machine, a container) the real app still runs and is captured: start
+it on a virtual display (`Xvfb`) with Mesa's software Vulkan driver (the `mesa-vulkan-drivers` package;
+`WGPU_BACKEND=vulkan`) and `--control <port>`. Its windows are ordinary X windows, so a second one such
+as the presenter's own is found with `xdotool search --name Prototype`; with no window manager nothing
+gives a window the keyboard, so `xdotool windowfocus <id>` before typing into it. This is how the
+presenter's window was checked (clicks and keys from the X server, a close request, captures).
+
 ### `ui.render {path, scale?, ids?}`
 
 PNG of the document without UI chrome (works without a window). Without `ids` it exports the
